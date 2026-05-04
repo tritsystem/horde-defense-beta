@@ -1,8 +1,8 @@
 [gd_scene format=3 uid="uid://xivli275rq54"]
 
-[ext_resource type="Script" uid="uid://dvkd3alm4jbeg" path="res://scripts/lazerprojectile.gd" id="1_hxltt"]
-[ext_resource type="AudioStream" uid="uid://cxyfj18x84385" path="res://assets/sound effects/PE-Laser_BW.36465.wav" id="2_n2lgo"]
-[ext_resource type="AudioStream" uid="uid://b5wmsbkdpi7in" path="res://assets/sound effects/MO_BIO_hihat_juicey.wav" id="3_akjtc"]
+[ext_resource type="Script" uid="uid://dvkd3alm4jbeg" path="res://scripts/lazerprojectile.gd" id="1_5odub"]
+[ext_resource type="AudioStream" uid="uid://cxyfj18x84385" path="res://assets/sound effects/PE-Laser_BW.36465.wav" id="2_umnre"]
+[ext_resource type="AudioStream" uid="uid://b5wmsbkdpi7in" path="res://assets/sound effects/MO_BIO_hihat_juicey.wav" id="3_ythsd"]
 
 [sub_resource type="SphereMesh" id="SphereMesh_jqpah"]
 radius = 0.05
@@ -12,11 +12,11 @@ height = 0.1
 radius = 0.05481723
 
 [node name="lazer" type="Node3D" unique_id=259151255]
-script = ExtResource("1_hxltt")
+script = ExtResource("1_5odub")
 speed = 50.0
-fly_stream = ExtResource("2_n2lgo")
-impact_stream = ExtResource("3_akjtc")
-fly_volume_db = -10.0
+fly_stream = ExtResource("2_umnre")
+impact_stream = ExtResource("3_ythsd")
+fly_volume_db = -20.0
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1818283800]
 mesh = SubResource("SphereMesh_jqpah")
