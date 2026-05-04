@@ -8,5 +8,6 @@
 *.mp3 filter=lfs diff=lfs merge=lfs -text
 *.glb filter=lfs diff=lfs merge=lfs -text
 *.tres filter=lfs diff=lfs merge=lfs -text
+*.exr filter=lfs diff=lfs merge=lfs -text
 /assets/sound[[:space:]]effects/qwantani_night_puresky_4k.exr filter=lfs diff=lfs merge=lfs -text
 /assets/textures/qwantani_night_puresky_4k.exr filter=lfs diff=lfs merge=lfs -text
