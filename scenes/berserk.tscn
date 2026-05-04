@@ -1,5 +1,0 @@
-[gd_scene format=3 uid="uid://drur3re8pkkqv"]
-
-[ext_resource type="PackedScene" uid="uid://baf4734ung1df" path="res://zombie/Berserker/berserk.fbx" id="1_lmbyu"]
-
-[node name="berserk" unique_id=604182889 instance=ExtResource("1_lmbyu")]

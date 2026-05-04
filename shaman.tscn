@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://chic6f3k81quc"]
+
+[ext_resource type="Script" uid="uid://d0gqqrfmvycgn" path="res://shaman.gd" id="1_8qbfv"]
+
+[node name="shaman" type="CharacterBody3D" unique_id=814413776]
+script = ExtResource("1_8qbfv")

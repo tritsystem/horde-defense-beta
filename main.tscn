@@ -3,6 +3,7 @@
 [ext_resource type="PackedScene" uid="uid://ndqemdv3wh03" path="res://scenes/game_phase_script.tscn" id="1_yaehf"]
 [ext_resource type="PackedScene" uid="uid://db0dyfgdh1epi" path="res://zombie/zombie.tscn" id="2_1bvp3"]
 [ext_resource type="Texture2D" uid="uid://cv7bf5gfaqw78" path="res://assets/textures/qwantani_night_puresky_4k.hdr" id="2_yaehf"]
+[ext_resource type="Script" uid="uid://bkm8gi7bvqed0" path="res://forestspawner.gd" id="3_1u8w0"]
 [ext_resource type="Script" uid="uid://jaatqbavr157" path="res://scripts/spawner_team_1.gd" id="3_efxa6"]
 [ext_resource type="PackedScene" uid="uid://b1ip17y5bqkff" path="res://scenes/Player.tscn" id="3_lquwl"]
 [ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://scenes/turret.tscn" id="4_1bvp3"]
@@ -16,9 +17,12 @@
 [ext_resource type="Script" uid="uid://0kpyf62i72bj" path="res://scripts/shopui.gd" id="11_w48qg"]
 [ext_resource type="PackedScene" uid="uid://dioax1kaqsjca" path="res://scenes/tank.tscn" id="12_074og"]
 [ext_resource type="PackedScene" uid="uid://5kxv47s8lksy" path="res://scenes/patrolpath.tscn" id="13_82xsv"]
+[ext_resource type="PackedScene" uid="uid://c2wwnihigntq4" path="res://zombie/shaman/shaman.tscn" id="13_getpj"]
 [ext_resource type="Texture2D" uid="uid://dr54ntf3k6q2y" path="res://assets/textures/texture pack 1/1-16/Asset 6.png" id="13_vivmo"]
 [ext_resource type="Script" uid="uid://tcruh5fu7a5f" path="res://scripts/HealthComponent.gd" id="13_ycdy4"]
 [ext_resource type="Script" uid="uid://ds8gm3k0u1aso" path="res://scripts/weaonhud.gd" id="14_cegan"]
+[ext_resource type="PackedScene" uid="uid://c0ahfp17h3edt" path="res://zombie/Berserker/berserker.tscn" id="14_ryguw"]
+[ext_resource type="PackedScene" uid="uid://bc8es4ec6qykt" path="res://zombie/LEAPER/leaper.tscn" id="15_d13ii"]
 [ext_resource type="Texture2D" uid="uid://wbamvixmydtx" path="res://assets/textures/retro_nature_pack/textures/trees/brown_mud_dry_diff_4k.jpg" id="16_2cqfq"]
 
 [sub_resource type="PanoramaSkyMaterial" id="PanoramaSkyMaterial_074og"]
@@ -227,6 +231,9 @@ fog_density = 0.003
 [node name="WorldEnvironment" type="WorldEnvironment" parent="GamePhaseController" unique_id=1168777176]
 environment = SubResource("Environment_82xsv")
 
+[node name="forest spawner" type="Node3D" parent="GamePhaseController/WorldEnvironment" unique_id=686493089]
+script = ExtResource("3_1u8w0")
+
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="GamePhaseController" unique_id=2146969502]
 transform = Transform3D(-0.8660254, -0.43301278, 0.25, 0, 0.49999997, 0.86602545, -0.50000006, 0.75, -0.43301266, 0, 0, 0)
 light_energy = 0.528
@@ -252,7 +259,7 @@ transform = Transform3D(91.476, 0, 0, 0, 0.99999934, 0, 0, 0, 0.9999995, -3.857,
 transform = Transform3D(1, 0, 0, 0, 0.9999987, 0, 0, 0, 0.9999995, -1.429, 1, 1.75)
 
 [node name="SpawnerTeam2" type="Node3D" parent="." unique_id=965284963 node_paths=PackedStringArray("enemy_base", "friendly_base") groups=["creep_spawner"]]
-transform = Transform3D(-0.99999994, 0, -8.742277e-08, 0, 3.04, 0, 8.742277e-08, 0, -0.99999994, 125.00001, 0.6, 0)
+transform = Transform3D(-0.99999994, 0, -8.742277e-08, 0, 3.04, 0, 8.742277e-08, 0, -0.99999994, 125.00001, -0.19999996, 0)
 script = ExtResource("4_dg77c")
 enemy_base = NodePath("../Base")
 friendly_base = NodePath("../Base2")
@@ -333,9 +340,9 @@ turret_costs = Array[int]([100, 100, 200, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 attack_creep_scenes = Array[PackedScene]([ExtResource("2_1bvp3")])
 attack_creep_labels = Array[String](["zombie"])
 attack_creep_costs = Array[int]([100, 0])
-defend_creep_scenes = Array[PackedScene]([ExtResource("2_1bvp3"), ExtResource("12_074og")])
-defend_creep_labels = Array[String](["zombie", "Tank"])
-defend_creep_costs = Array[int]([100, 300, 0, 0, 0])
+defend_creep_scenes = Array[PackedScene]([ExtResource("2_1bvp3"), ExtResource("12_074og"), ExtResource("13_getpj"), ExtResource("14_ryguw"), ExtResource("15_d13ii")])
+defend_creep_labels = Array[String](["Zombie", "Tank", "Shaman", "Berserker", "Leaper"])
+defend_creep_costs = Array[int]([100, 300, 200, 250, 300])
 metadata/_edit_use_anchors_ = true
 
 [node name="patrol path" parent="UI/Control/SHOPUI" unique_id=2079977545 instance=ExtResource("13_82xsv")]
