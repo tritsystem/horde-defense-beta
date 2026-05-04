@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://dbd7lekq5h7rl"]
 
-[ext_resource type="Script" uid="uid://qi2hufvqo0xt" path="res://forest_spawner.gd" id="1_e1xwq"]
+[ext_resource type="Script" uid="uid://qi2hufvqo0xt" path="res://scripts/forest_spawner.gd" id="1_e1xwq"]
 [ext_resource type="PackedScene" uid="uid://bftju72m75lqt" path="res://assets/textures/retro_nature_pack/models/FBX/trees/tree04.fbx" id="2_h3mcu"]
 
 [node name="ForestSpawner" type="Node3D" unique_id=1507311069]

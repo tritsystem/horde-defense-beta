@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://b8d5jnw6ccpc7"]
 
-[ext_resource type="Script" uid="uid://30sqtbkl8fc1" path="res://FactionManager.gd" id="1_lk0hw"]
+[ext_resource type="Script" uid="uid://30sqtbkl8fc1" path="res://scripts/FactionManager.gd" id="1_lk0hw"]
 
 [node name="FactionManager" type="Node3D" unique_id=883037881]
 script = ExtResource("1_lk0hw")

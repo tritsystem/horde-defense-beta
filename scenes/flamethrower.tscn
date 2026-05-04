@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://0pccdxkpwi0h"]
 
 [ext_resource type="PackedScene" uid="uid://dqifdoulej1db" path="res://assets/textures/texture pack 1/33-50/Flamethrower/Flamethrower_1.fbx" id="1_1yrg3"]
-[ext_resource type="Script" uid="uid://dxtvyk0nb14il" path="res://flamethrower.gd" id="1_88fd3"]
+[ext_resource type="Script" uid="uid://dxtvyk0nb14il" path="res://scripts/flamethrower.gd" id="1_88fd3"]
 
 [node name="Flamethrower" type="Node3D" unique_id=52466931]
 script = ExtResource("1_88fd3")

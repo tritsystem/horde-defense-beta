@@ -1,8 +1,8 @@
 [gd_scene format=3 uid="uid://bjb62oa205a8f"]
 
-[ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://turret.tscn" id="1_i26tj"]
-[ext_resource type="Script" uid="uid://d4dywapbjk7dg" path="res://iceturret.gd" id="2_wdaja"]
-[ext_resource type="Script" uid="uid://vhijlfjyvj0i" path="res://area_3d_2.gd" id="3_f46yy"]
+[ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://scenes/turret.tscn" id="1_i26tj"]
+[ext_resource type="Script" uid="uid://d4dywapbjk7dg" path="res://scripts/iceturret.gd" id="2_wdaja"]
+[ext_resource type="Script" uid="uid://vhijlfjyvj0i" path="res://scripts/area_3d_2.gd" id="3_f46yy"]
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_ke3xq"]
 top_radius = 0.3

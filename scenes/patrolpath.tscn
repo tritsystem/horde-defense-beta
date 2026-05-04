@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://5kxv47s8lksy"]
 
-[ext_resource type="Script" uid="uid://c5yet21c7ledx" path="res://patrolpath.gd" id="1_1pyob"]
+[ext_resource type="Script" uid="uid://c5yet21c7ledx" path="res://scripts/patrolpath.gd" id="1_1pyob"]
 
 [node name="patrol path" type="Node" unique_id=2079977545]
 script = ExtResource("1_1pyob")

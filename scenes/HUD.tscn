@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://psg2wkcfbpub"]
 
-[ext_resource type="Script" uid="uid://3nq4ip6y53h5" path="res://upgrade_panel.gd" id="2_efote"]
+[ext_resource type="Script" uid="uid://3nq4ip6y53h5" path="res://scripts/upgrade_panel.gd" id="2_efote"]
 
 [node name="UI" type="Node3D" unique_id=75887118 groups=["ui"]]
 

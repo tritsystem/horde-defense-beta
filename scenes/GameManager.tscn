@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://cgp5a31a4wexu"]
 
-[ext_resource type="Script" uid="uid://b0oyliaxd4van" path="res://game_manager.gd" id="1_p13vs"]
-[ext_resource type="PackedScene" uid="uid://db0dyfgdh1epi" path="res://zombie.tscn" id="2_aelf4"]
+[ext_resource type="Script" uid="uid://b0oyliaxd4van" path="res://scripts/game_manager.gd" id="1_p13vs"]
+[ext_resource type="PackedScene" uid="uid://db0dyfgdh1epi" path="res://zombie/zombie.tscn" id="2_aelf4"]
 
 [node name="GameManager" type="Node3D" unique_id=1096756110]
 visible = false

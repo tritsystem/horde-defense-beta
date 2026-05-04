@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://dws77duy0gp5l"]
 
-[ext_resource type="Script" uid="uid://dlfgnrxuum817" path="res://rocket.gd" id="1_fj03e"]
+[ext_resource type="Script" uid="uid://dlfgnrxuum817" path="res://scripts/rocket.gd" id="1_fj03e"]
 [ext_resource type="AudioStream" uid="uid://7rb6kug0opno" path="res://assets/sound effects/ESM_MDL_fx_foley_one_shot_backpack_crisp_saturated_drop.wav" id="2_r2l15"]
 [ext_resource type="AudioStream" uid="uid://d1orrmmbuh00y" path="res://assets/sound effects/ESM_Battle_Game_Explosion_Grenade_Close_4_Big_Hit_Bomb_Explode_Feiry_One_Shot.wav" id="3_tpb7v"]
 

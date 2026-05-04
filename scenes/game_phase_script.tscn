@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://ndqemdv3wh03"]
 
-[ext_resource type="Script" uid="uid://cvq0sqo1cvs1i" path="res://game_phase_script.gd" id="1_vk2rx"]
+[ext_resource type="Script" uid="uid://cvq0sqo1cvs1i" path="res://scripts/game_phase_script.gd" id="1_vk2rx"]
 [ext_resource type="AudioStream" uid="uid://cb0ouf82kxt60" path="res://assets/sound effects/FF_HFFX_sfx_jump_scare_unsettling_descent.wav" id="2_nlo3r"]
 
 [node name="GamePhaseController" type="Node3D" unique_id=1317789744 node_paths=PackedStringArray("scary_sound")]

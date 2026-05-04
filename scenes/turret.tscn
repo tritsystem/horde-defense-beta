@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://ga8cs2hxm2jc"]
 
-[ext_resource type="Script" uid="uid://c2qdj5lmap35j" path="res://turret.gd" id="1_3oylf"]
-[ext_resource type="PackedScene" uid="uid://bxm5dwqhjio2t" path="res://projectile.tscn" id="2_tjdg3"]
+[ext_resource type="Script" uid="uid://c2qdj5lmap35j" path="res://scripts/turret.gd" id="1_3oylf"]
+[ext_resource type="PackedScene" uid="uid://bxm5dwqhjio2t" path="res://scenes/projectile.tscn" id="2_tjdg3"]
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_tjdg3"]
 

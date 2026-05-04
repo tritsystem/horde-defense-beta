@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://12gpxhu67khp"]
 
 [ext_resource type="PackedScene" uid="uid://ciwqipc17iwlt" path="res://assets/textures/texture pack 1/33-50/Shotgun/Shotgun_1.fbx" id="1_iwoud"]
-[ext_resource type="Script" uid="uid://bqs584d062pvj" path="res://rocketgun.gd" id="1_o6dy7"]
+[ext_resource type="Script" uid="uid://bqs584d062pvj" path="res://scripts/rocketgun.gd" id="1_o6dy7"]
 [ext_resource type="ArrayMesh" uid="uid://b807ho5a80aww" path="res://rocketgun.res" id="2_g04us"]
 
 [node name="rocketgun" type="Node3D" unique_id=747365952]

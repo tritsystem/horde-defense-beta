@@ -1,9 +1,9 @@
 [gd_scene format=3 uid="uid://c6ndyo4gd0obt"]
 
-[ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://turret.tscn" id="1_4drgp"]
-[ext_resource type="Script" uid="uid://k3d7x0bjgn65" path="res://fireturret.gd" id="2_decg0"]
-[ext_resource type="Script" uid="uid://vhijlfjyvj0i" path="res://area_3d_2.gd" id="3_4opje"]
-[ext_resource type="PackedScene" uid="uid://by1vu8210stw3" path="res://FlameEffect.tscn" id="3_decg0"]
+[ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://scenes/turret.tscn" id="1_4drgp"]
+[ext_resource type="Script" uid="uid://k3d7x0bjgn65" path="res://scripts/fireturret.gd" id="2_decg0"]
+[ext_resource type="Script" uid="uid://vhijlfjyvj0i" path="res://scripts/area_3d_2.gd" id="3_4opje"]
+[ext_resource type="PackedScene" uid="uid://by1vu8210stw3" path="res://scenes/FlameEffect.tscn" id="3_decg0"]
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_2befm"]
 top_radius = 0.3
