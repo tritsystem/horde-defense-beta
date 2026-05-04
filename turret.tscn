@@ -1,0 +1,24 @@
+[gd_scene format=3 uid="uid://ga8cs2hxm2jc"]
+
+[ext_resource type="Script" uid="uid://c2qdj5lmap35j" path="res://turret.gd" id="1_3oylf"]
+[ext_resource type="PackedScene" uid="uid://bxm5dwqhjio2t" path="res://projectile.tscn" id="2_tjdg3"]
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_tjdg3"]
+
+[sub_resource type="CylinderShape3D" id="CylinderShape3D_tjdg3"]
+
+[node name="Turret" type="Node3D" unique_id=905842201]
+script = ExtResource("1_3oylf")
+projectile_scene = ExtResource("2_tjdg3")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=2080779790]
+mesh = SubResource("CylinderMesh_tjdg3")
+
+[node name="Muzzle" type="Node3D" parent="." unique_id=1560728988]
+
+[node name="Area3D3" type="Area3D" parent="." unique_id=495339905]
+collision_layer = 3
+collision_mask = 3
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Area3D3" unique_id=1915064464]
+shape = SubResource("CylinderShape3D_tjdg3")

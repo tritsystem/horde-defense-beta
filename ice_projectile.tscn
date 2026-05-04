@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://0rt2ua1sax2x"]
+
+[ext_resource type="Script" uid="uid://bj3entyomwrkb" path="res://ice_projectile.gd" id="1_0btx0"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_0btx0"]
+radius = 0.05984497
+height = 0.11968994
+
+[node name="IceProjectile" type="Node3D" unique_id=399071393]
+script = ExtResource("1_0btx0")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1762070361]
+
+[node name="Area3D" type="Area3D" parent="." unique_id=839207319]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Area3D" unique_id=1051746762]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.25984502, 0)
+shape = SubResource("CapsuleShape3D_0btx0")

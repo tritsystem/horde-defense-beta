@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://mwugejnyfwjv"]
+
+[ext_resource type="Script" uid="uid://d3hpjmq4futdj" path="res://projectilegun.gd" id="1_66hoe"]
+[ext_resource type="PackedScene" uid="uid://c8tnm6k05gvh4" path="res://assets/textures/texture pack 1/33-50/Sniper/Sniper_1.fbx" id="1_yhvrc"]
+
+[node name="lazerifle" type="Node3D" unique_id=2133761732]
+script = ExtResource("1_66hoe")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=435442561]
+
+[node name="Sniper_1" parent="MeshInstance3D" unique_id=835517316 instance=ExtResource("1_yhvrc")]

@@ -1,0 +1,21 @@
+[gd_scene format=3 uid="uid://bxm5dwqhjio2t"]
+
+[ext_resource type="Script" uid="uid://b5g6aayimal16" path="res://projectile.gd" id="1_a85iw"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_a85iw"]
+radius = 0.02
+
+[sub_resource type="SphereMesh" id="SphereMesh_a85iw"]
+
+[node name="projectile" type="Area3D" unique_id=1378151763]
+script = ExtResource("1_a85iw")
+speed = 50.0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=304533903]
+shape = SubResource("SphereShape3D_a85iw")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1067141758]
+transform = Transform3D(0.0252, 0, 0, 0, 0.008930249, 0, 0, 0, 0.030719995, 0, 0, 0)
+mesh = SubResource("SphereMesh_a85iw")
+
+[node name="Muzzle" type="Node3D" parent="." unique_id=1480295004]

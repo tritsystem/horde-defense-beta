@@ -1,0 +1,95 @@
+[gd_scene format=3 uid="uid://psg2wkcfbpub"]
+
+[ext_resource type="Script" uid="uid://3nq4ip6y53h5" path="res://upgrade_panel.gd" id="2_efote"]
+
+[node name="UI" type="Node3D" unique_id=75887118 groups=["ui"]]
+
+[node name="HUD" type="CanvasLayer" parent="." unique_id=257443992 groups=["ui"]]
+
+[node name="Control" type="Control" parent="HUD" unique_id=1510389751 groups=["ui"]]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_right = 40.0
+offset_bottom = 40.0
+grow_horizontal = 2
+grow_vertical = 2
+metadata/_edit_use_anchors_ = true
+
+[node name="HealthBar" type="TextureProgressBar" parent="HUD/Control" unique_id=2066637071]
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.05
+anchor_top = 0.9
+anchor_right = 0.35
+anchor_bottom = 0.95
+offset_right = 40.0
+offset_bottom = 40.0
+metadata/_edit_use_anchors_ = true
+
+[node name="Ammo_Label" type="Label" parent="HUD/Control" unique_id=592560534]
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.8
+anchor_top = 0.9
+anchor_right = 0.8
+anchor_bottom = 0.9
+offset_right = 40.0
+offset_bottom = 23.0
+text = "Ammo: 30/30"
+metadata/_edit_use_anchors_ = true
+
+[node name="Wave_Label" type="Label" parent="HUD/Control" unique_id=1730459358]
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.4
+anchor_top = 0.05
+anchor_right = 0.4
+anchor_bottom = 0.05
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="ZombiesAlive_Label" type="Label" parent="HUD/Control" unique_id=1607441508]
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.4
+anchor_top = 0.1
+anchor_right = 0.4
+anchor_bottom = 0.1
+offset_right = 40.0
+offset_bottom = 23.0
+text = "Zombies Alive: 0"
+metadata/_edit_use_anchors_ = true
+
+[node name="UpgradePanel" type="Panel" parent="HUD/Control" unique_id=2007627219 groups=["ui"]]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+script = ExtResource("2_efote")
+metadata/_edit_use_anchors_ = true
+
+[node name="Level" type="Label" parent="HUD/Control/UpgradePanel" unique_id=1787147269]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="Damage" type="Label" parent="HUD/Control/UpgradePanel" unique_id=1081119866]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="Cost" type="Label" parent="HUD/Control/UpgradePanel" unique_id=1243955112]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="Upgrade" type="Button" parent="HUD/Control/UpgradePanel" unique_id=699060788]
+layout_mode = 0
+offset_right = 8.0
+offset_bottom = 8.0
+metadata/_edit_use_anchors_ = true

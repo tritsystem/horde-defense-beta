@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://0pccdxkpwi0h"]
+
+[ext_resource type="PackedScene" uid="uid://dqifdoulej1db" path="res://assets/textures/texture pack 1/33-50/Flamethrower/Flamethrower_1.fbx" id="1_1yrg3"]
+[ext_resource type="Script" uid="uid://dxtvyk0nb14il" path="res://flamethrower.gd" id="1_88fd3"]
+
+[node name="Flamethrower" type="Node3D" unique_id=52466931]
+script = ExtResource("1_88fd3")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1449681758]
+
+[node name="Flamethrower_1" parent="MeshInstance3D" unique_id=1261415099 instance=ExtResource("1_1yrg3")]
