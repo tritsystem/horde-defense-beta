@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://6e0vxdr7dwem"]
+
+[ext_resource type="PackedScene" uid="uid://m162klopded1" path="res://zombie/Zombie Run(1).fbx" id="1_7m0uc"]
+
+[node name="Node3D" type="Node3D" unique_id=700014453]
+
+[node name="Zombie Run(1)" parent="." unique_id=1812187413 instance=ExtResource("1_7m0uc")]

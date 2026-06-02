@@ -1,114 +1,76 @@
 # ============================================================
-# tank_creep.gd
-# 🪨 TANK — High HP, periodically taunts nearby enemy creeps.
+# TankCreep.gd — extends BaseZombie AAA
+# Heavy frontliner. Taunts enemies, ground-slam AoE.
 # ============================================================
-extends BaseCreep
+extends "res://assets/weapons/resources/Player/zombie.gd"
 
-# ===============================
-# EXPORTS
-# ===============================
-@export var taunt_radius   : float = 6.0
+@export_group("Tank")
+@export var taunt_radius   : float = 8.0
 @export var taunt_cooldown : float = 8.0
-@export var taunt_duration : float = 3.0
+@export var taunt_duration : float = 3.5
+@export var slam_radius    : float = 3.5
+@export var slam_damage    : float = 40.0
+@export var slam_cooldown  : float = 6.0
 
-# ===============================
-# STATE
-# ===============================
 var _taunt_timer : float = 0.0
+var _slam_timer  : float = 0.0
+var _is_taunting : bool  = false
 
-# ===============================
-# READY
-# ===============================
 func _ready() -> void:
-	max_health      = 300.0
-	move_speed      = 1.8
-	damage          = 8.0
-	attack_range    = 2.2
-	attack_cooldown = 1.5
-	gold_reward     = 40
+	max_health      = 1200.0
+	move_speed      = 1.6
+	damage          = 22.0
+	attack_range    = 2.6
+	attack_cooldown = 1.8
+	gold_reward     = 75
+	armor_physical  = 15.0
+	armor_slash     = 10.0
 	super._ready()
-	_taunt_timer = taunt_cooldown * randf_range(0.3, 0.7)
-	print("[Tank] spawned | owner_id=%d | team_id=%d" % [owner_id, team_id])
+	add_to_group("minions")
+	add_to_group("zombies")
+	_taunt_timer = randf_range(2.0, taunt_cooldown)
+	_slam_timer  = randf_range(3.0, slam_cooldown)
 
-# ===============================
-# PHYSICS PROCESS
-# ===============================
 func _physics_process(delta: float) -> void:
 	super._physics_process(delta)
-	if _is_dead:
-		return
+	if is_dead: return
 	_taunt_timer -= delta
+	_slam_timer  -= delta
 	if _taunt_timer <= 0.0:
-		_do_taunt()
 		_taunt_timer = taunt_cooldown
+		_do_taunt()
+	if _slam_timer <= 0.0 and is_instance_valid(target):
+		var d := global_position.distance_to(target.global_position)
+		if d <= slam_radius + 0.5:
+			_slam_timer = slam_cooldown
+			_do_slam()
 
-# ===============================
-# ATTACK
-# ===============================
-func _try_attack(t: Node3D) -> void:
-	if _attack_timer > 0.0:
-		return
-	_attack_timer = attack_cooldown
-	if _anim_tree:
-		_anim_tree.set(
-			"parameters/attack_shot/request",
-			AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
-	if t.has_method("take_damage"):
-		t.take_damage(damage, self)
-
-# ===============================
-# TAKE DAMAGE
-# ===============================
-func take_damage(amount: float, instigator: Node = null) -> void:
-	if _is_dead:
-		return
-	health -= amount
-	if instigator != null and instigator is Node3D and is_instance_valid(instigator):
-		_commit_target(instigator as Node3D)
-	if health <= 0.0:
-		_start_death()
-
-# ===============================
-# DEATH
-# ===============================
-func _start_death() -> void:
-	if _is_dead:
-		return
-	_is_dead = true
-	velocity = Vector3.ZERO
-	set_physics_process(false)
-	if _anim_tree:
-		_anim_tree.set(
-			"parameters/death_shot/request",
-			AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
-	print("[Tank] died | awarding %d gold" % gold_reward)
-	var ap  := get_node_or_null("AnimationPlayer2") as AnimationPlayer
-	var dur := 1.5
-	if ap and ap.has_animation("die"):
-		dur = ap.get_animation("die").length
-	await get_tree().create_timer(dur).timeout
-	_award_gold()
-	queue_free()
-
-# ===============================
-# TAUNT
-# ===============================
 func _do_taunt() -> void:
-	var taunted := 0
-	for u in get_tree().get_nodes_in_group("creeps"):
-		if not is_instance_valid(u): continue
-		if u == self: continue
-		if not (u is Node3D): continue
-		if _is_friendly(u): continue
-		if not u.has_method("set_forced_target"): continue
-		var dist := global_position.distance_to((u as Node3D).global_position)
-		if dist <= taunt_radius:
+	_is_taunting = true
+	for u in get_tree().get_nodes_in_group("units"):
+		if not is_instance_valid(u) or not ("team_id" in u): continue
+		if int(u.get("team_id")) == team_id: continue
+		if u.global_position.distance_to(global_position) > taunt_radius: continue
+		if u.has_method("set_forced_target"):
 			u.set_forced_target(self, taunt_duration)
-			taunted += 1
-	print("[Tank] taunt fired | taunted %d enemy creep(s)" % taunted)
-	_play_taunt_vfx()
+		elif "target" in u:
+			u.set("target", self)
+	var dn := get_tree().get_first_node_in_group("damage_numbers")
+	if is_instance_valid(dn) and dn.has_method("spawn_number"):
+		dn.spawn_number(0, global_position + Vector3(0, 2.8, 0), 0, false)
+	get_tree().create_timer(taunt_duration).timeout.connect(
+		func(): _is_taunting = false, CONNECT_ONE_SHOT)
 
-func _play_taunt_vfx() -> void:
-	var vfx := get_node_or_null("TauntVFX")
-	if is_instance_valid(vfx) and vfx.has_method("restart"):
-		vfx.restart()
+func _do_slam() -> void:
+	var dn := get_tree().get_first_node_in_group("damage_numbers")
+	for u in get_tree().get_nodes_in_group("units"):
+		if not is_instance_valid(u) or not ("team_id" in u): continue
+		if int(u.get("team_id")) == team_id: continue
+		if u.global_position.distance_to(global_position) > slam_radius: continue
+		if u.has_method("take_damage"):
+			u.take_damage(slam_damage, self)
+			if is_instance_valid(dn) and dn.has_method("spawn_number"):
+				dn.spawn_number(slam_damage, u.global_position + Vector3(0,1.5,0), 0, false)
+		var kb_dir : Vector3 = (u as Node3D).global_position - global_position
+		kb_dir.y = 0.3
+		if u is CharacterBody3D: (u as CharacterBody3D).velocity += kb_dir.normalized() * 8.0

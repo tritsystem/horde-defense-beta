@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cyw5awjo4hhdv"]
+
+[ext_resource type="Script" uid="uid://p34arydaui7w" path="res://scripts/castle_generator.gd" id="1_8er6j"]
+
+[node name="CastleGenerator" type="Node3D" unique_id=1418468307]
+script = ExtResource("1_8er6j")

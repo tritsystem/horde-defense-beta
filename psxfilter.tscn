@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://coatja88062c8"]
+
+[ext_resource type="Script" uid="uid://bgvqydmk8lk76" path="res://psxfilter.gd" id="1_7l2pg"]
+
+[node name="psxfilter" type="Node3D" unique_id=1169549675]
+script = ExtResource("1_7l2pg")

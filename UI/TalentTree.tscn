@@ -1,0 +1,26 @@
+[gd_scene format=3 uid="uid://cwxfccd2re1ac"]
+
+[ext_resource type="Script" uid="uid://ebuq4447fxcc" path="res://TalentTree.gd" id="1_y1e5j"]
+
+[node name="TalentTree" type="Control" unique_id=1070738198]
+layout_mode = 3
+anchors_preset = 0
+script = ExtResource("1_y1e5j")
+
+[node name="Panel" type="Panel" parent="." unique_id=1023372710]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="AttackContainer" type="VBoxContainer" parent="Panel" unique_id=1881857038]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="DefendContainer" type="VBoxContainer" parent="Panel" unique_id=2025607115]
+layout_mode = 0
+offset_right = 40.0
+
+[node name="MotionContainer" type="VBoxContainer" parent="Panel" unique_id=59024970]
+layout_mode = 0
+offset_right = 40.0

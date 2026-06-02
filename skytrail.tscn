@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://bi08x6wj03eqe"]
+
+[ext_resource type="Script" uid="uid://bni2yk0l5kuva" path="res://skytrail.gd" id="1_fcxol"]
+
+[node name="sky trail" type="Node3D" unique_id=1464921776]
+script = ExtResource("1_fcxol")

@@ -1,9 +1,8 @@
 [gd_scene format=3 uid="uid://c6ndyo4gd0obt"]
 
-[ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://scenes/turret.tscn" id="1_4drgp"]
 [ext_resource type="Script" uid="uid://k3d7x0bjgn65" path="res://scripts/fireturret.gd" id="2_decg0"]
+[ext_resource type="PackedScene" uid="uid://crl186mel4mdp" path="res://assets/textures/turrets/flame_turret.glb" id="2_qxe18"]
 [ext_resource type="Script" uid="uid://vhijlfjyvj0i" path="res://scripts/area_3d_2.gd" id="3_4opje"]
-[ext_resource type="PackedScene" uid="uid://by1vu8210stw3" path="res://scenes/FlameEffect.tscn" id="3_decg0"]
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_2befm"]
 top_radius = 0.3
@@ -13,29 +12,25 @@ height = 2.25
 radius = 0.7
 
 [node name="Fire turret" type="Node3D" unique_id=1365705682]
-
-[node name="Turret" parent="." unique_id=905842201 groups=["Towers"] instance=ExtResource("1_4drgp")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.7000008, 0, 0)
+transform = Transform3D(-0.04354561, 0, 0, 0, 0.008316004, 0, 0, 0, 0.017463602, 0, 0, 0)
 script = ExtResource("2_decg0")
-range = 13.0
-fire_rate = 0.25
-base_damage = 6.0
-projectile_scene = ExtResource("3_decg0")
-spread = 0.08
-burst_count = 2
 
-[node name="MeshInstance3D2" type="MeshInstance3D" parent="Turret" unique_id=1037738968 groups=["Towers", "ui"]]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, 0)
+[node name="Sketchfab_Scene" parent="." unique_id=1767884786 instance=ExtResource("2_qxe18")]
+transform = Transform3D(-7.382673e-08, 0, -1.1599978, 0, 7.278324, 0, 1.6889584, 0, -5.070511e-08, 0, 0, 0)
+
+[node name="MeshInstance3D2" type="MeshInstance3D" parent="." unique_id=1037738968 groups=["Towers", "ui"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.7000008, 0.2, 0)
+visible = false
 mesh = SubResource("CylinderMesh_2befm")
 
-[node name="Muzzle2" type="Node3D" parent="Turret" unique_id=734423208 groups=["Towers"]]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3.7000008, 0, 0)
+[node name="Muzzle2" type="Node3D" parent="." unique_id=734423208 groups=["Towers"]]
 
-[node name="Area3D2" type="Area3D" parent="Turret" unique_id=1361875266 groups=["Towers", "ui"]]
+[node name="Area3D2" type="Area3D" parent="." unique_id=1361875266 groups=["Towers", "ui"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.7000008, 0, 0)
 collision_layer = 3
 collision_mask = 3
 script = ExtResource("3_4opje")
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Turret/Area3D2" unique_id=1999735480 groups=["Towers"]]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Area3D2" unique_id=1999735480 groups=["Towers"]]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.125, 0)
 shape = SubResource("CylinderShape3D_njdhe")

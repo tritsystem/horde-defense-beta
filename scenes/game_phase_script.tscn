@@ -2,11 +2,17 @@
 
 [ext_resource type="Script" uid="uid://cvq0sqo1cvs1i" path="res://scripts/game_phase_script.gd" id="1_vk2rx"]
 [ext_resource type="AudioStream" uid="uid://cb0ouf82kxt60" path="res://assets/sound effects/FF_HFFX_sfx_jump_scare_unsettling_descent.wav" id="2_nlo3r"]
+[ext_resource type="AudioStream" uid="uid://b41wn4vdhuw3x" path="res://ESM_Card_Game_Ambience_Dungeon_Dark_Howl_Chains_Scary_Loop_Anxious.wav" id="3_bxttp"]
 
-[node name="GamePhaseController" type="Node3D" unique_id=1317789744 node_paths=PackedStringArray("scary_sound")]
+[node name="GamePhaseController" type="Node3D" unique_id=1317789744 node_paths=PackedStringArray("scary_sound", "night_ambience")]
 script = ExtResource("1_vk2rx")
 fog_density = 0.07
 scary_sound = NodePath("FfHffxSfxJumpScareUnsettlingDescent")
+night_ambience = NodePath("EsmCardGameAmbienceDungeonDarkHowlChainsScaryLoopAnxious")
 
 [node name="FfHffxSfxJumpScareUnsettlingDescent" type="AudioStreamPlayer" parent="." unique_id=551441195]
 stream = ExtResource("2_nlo3r")
+
+[node name="EsmCardGameAmbienceDungeonDarkHowlChainsScaryLoopAnxious" type="AudioStreamPlayer" parent="." unique_id=997308247]
+stream = ExtResource("3_bxttp")
+bus = &"ambience"

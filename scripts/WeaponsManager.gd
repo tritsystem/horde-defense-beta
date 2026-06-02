@@ -1,238 +1,224 @@
 # ============================================================
-# weapon_manager.gd
-# Handles equipping, switching, shooting, and reloading guns.
-# Shooting is NOT gated on MOUSE_MODE_CAPTURED so top-down fire
-# works. The shop's _unhandled_input fires via player.topdown_fire()
-# → weapon_manager.try_shoot(), bypassing this _input entirely.
+# WeaponManager.gd
 # ============================================================
 extends Node
-class_name WeaponManager
 
-# ===============================
-# EXPORTS
-# ===============================
-@export var weapons              : Array[BaseGun]         = []
-@export var switch_sound         : AudioStreamPlayer      = null
-@export var default_gun_position : Vector3                = Vector3(0.2, -0.2, -0.6)
-@export var weapon_holder        : Node3D                 = null
+@export var switch_sound : AudioStreamPlayer3D
 
-# ===============================
-# STATE
-# ===============================
-var current_index  : int     = -1
-var current_weapon : BaseGun = null
-var camera         : Camera3D = null
-var player         : Node     = null
-var _is_firing: bool = false
-# ===============================
-# SIGNALS
-# ===============================
-signal weapon_changed(current_gun: BaseGun)
-signal weapon_equipped(gun: BaseGun, index: int, total: int)
+var player         : CharacterBody3D = null
+var camera         : Camera3D        = null
+var weapons        : Array[Node3D]   = []
+var current_index  : int             = -1
+var current_weapon : Node3D          = null
+var _initialized   : bool            = false
 
-# ===============================
-# READY
-# ===============================
+signal weapon_equipped(weapon: Node3D)
+signal weapons_initialized
+
+
 func _ready() -> void:
+	print("[WM] _ready | parent=", get_parent().name, " | children=", get_child_count())
 	await get_tree().process_frame
+	_init_weapons()
+	print("[WM] _ready done | initialized=", _initialized, " | weapons=", weapons.size())
 
-	player = _find_player()
-	if player == null:
-		push_error("[WeaponManager] No player found in parent chain.")
-		return
 
-	camera = _find_camera(player)
-	if camera == null:
-		push_error("[WeaponManager] No Camera3D found on player.")
-		return
+func _process(_delta: float) -> void:
+	if not is_instance_valid(current_weapon): return
+	if not is_instance_valid(camera): return
+	if not current_weapon.visible: return
+	var vm_pos : Vector3 = _get_vec(current_weapon, "vm_position", Vector3(0.3, -0.25, -0.5))
+	var vm_rot : Vector3 = _get_vec(current_weapon, "vm_rotation", Vector3(0.0, 180.0, 0.0))
+	var cam_t  : Transform3D = camera.global_transform
+	current_weapon.global_position = cam_t.origin + cam_t.basis * vm_pos
+	current_weapon.global_basis    = cam_t.basis * Basis.from_euler(
+		Vector3(deg_to_rad(vm_rot.x), deg_to_rad(vm_rot.y), deg_to_rad(vm_rot.z)))
 
-	if weapon_holder == null:
-		weapon_holder = camera
 
+func _get_vec(node: Node3D, prop: String, fallback: Vector3) -> Vector3:
+	if prop in node:
+		var v = node.get(prop)
+		if v is Vector3: return v
+	return fallback
+
+
+func bind_player(p: CharacterBody3D, c: Camera3D) -> void:
+	print("[WM] bind_player called | player=", p.name if is_instance_valid(p) else "NULL", " | camera=", c.name if is_instance_valid(c) else "NULL")
+	if not is_instance_valid(p): push_error("[WM] bind_player: player null"); return
+	if not is_instance_valid(c): push_error("[WM] bind_player: camera null"); return
+	player = p
+	camera = c
+	if not _initialized:
+		_init_weapons()
+	_push_refs_to_all()
+	_equip(0, false)
+	print("[WM] bind_player done | current_weapon=", current_weapon.name if is_instance_valid(current_weapon) else "NULL")
+
+
+func update_camera(c: Camera3D) -> void:
+	if not is_instance_valid(c): return
+	camera = c
+	_push_refs_to_all()
+	if current_index >= 0:
+		_equip(current_index, false)
+
+
+func reequip_current() -> void:
+	if _initialized and current_index >= 0:
+		_equip(current_index, false)
+
+
+func _init_weapons() -> void:
+	if _initialized: return
+	weapons.clear()
+	print("[WM] _init_weapons | scanning ", get_child_count(), " children")
+	for child in get_children():
+		print("[WM]   child: ", child.name, " | class=", child.get_class(), " | is Node3D=", child is Node3D)
+		if child is AudioStreamPlayer3D: continue
+		if not (child is Node3D): continue
+		var w := child as Node3D
+		weapons.append(w)
+		_force_hide(w)
 	if weapons.is_empty():
-		_collect_guns(self)
-
-	if weapons.is_empty():
-		push_error("[WeaponManager] No BaseGun children found.")
+		push_error("[WM] No Node3D weapon children found.")
 		return
+	_initialized = true
+	weapons_initialized.emit()
+	print("[WM] Initialized %d weapon(s)." % weapons.size())
 
-	print("[WeaponManager] %d gun(s) loaded." % weapons.size())
 
-	for gun in weapons:
-		_set_active_recursive(gun, false)
+func _equip(index: int, play_sound: bool = true) -> void:
+	if not _initialized: push_warning("[WM] _equip: not initialized"); return
+	if weapons.is_empty(): push_warning("[WM] _equip: no weapons"); return
+	if not is_instance_valid(camera): push_warning("[WM] _equip: no camera"); return
 
-	equip(0)
+	index = clampi(index, 0, weapons.size() - 1)
 
-# ===============================
-# INPUT
-# Owns weapon switching (scroll wheel) and reload (R).
-# FPS left-click shooting is handled here.
-# Top-down shooting is handled by shop.gd → player.topdown_fire() → try_shoot().
-# ===============================
-func _input(event: InputEvent) -> void:
-	print("WM INPUT:", event)
-	if _is_shop_open():
-		return
-
-	if event is InputEventMouseButton and event.pressed:
-		match event.button_index:
-			MOUSE_BUTTON_LEFT:
-				# FPS mode only — top-down click is consumed by shop._unhandled_input first
-				if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
-					try_shoot()
-			MOUSE_BUTTON_WHEEL_UP:
-				switch_weapon(-1)
-				get_viewport().set_input_as_handled()
-			MOUSE_BUTTON_WHEEL_DOWN:
-				switch_weapon(1)
-				get_viewport().set_input_as_handled()
-
-	if event is InputEventKey and event.pressed and not event.echo:
-		match event.keycode:
-			KEY_R:
-				try_reload()
-				get_viewport().set_input_as_handled()
-
-# ===============================
-# WEAPON SWITCHING
-# ===============================
-func switch_weapon(dir: int) -> void:
-	if weapons.is_empty():
-		return
-	var new_index : int = posmod(current_index + dir, weapons.size())
-	if new_index != current_index:
-		equip(new_index)
-
-func switch_to(index: int) -> void:
-	if index < 0 or index >= weapons.size():
-		push_warning("[WeaponManager] switch_to: index %d out of range." % index)
-		return
-	if index != current_index:
-		equip(index)
-
-func next_weapon() -> void: switch_weapon(1)
-func prev_weapon() -> void: switch_weapon(-1)
-
-# ===============================
-# EQUIP
-# ===============================
-func equip(index: int) -> void:
-	if index < 0 or index >= weapons.size():
-		return
-
-	if current_index != -1:
-		var old : BaseGun = weapons[current_index]
-		old.unequip()
-		_set_active_recursive(old, false)
+	if is_instance_valid(current_weapon):
+		_call_safe(current_weapon, "stop_shoot")
+		_call_safe(current_weapon, "unequip")
+		_force_hide(current_weapon)
 
 	current_index  = index
-	var gun : BaseGun = weapons[current_index]
-	current_weapon = gun
+	current_weapon = weapons[index]
 
-	if gun.get_parent() != weapon_holder:
-		if gun.get_parent():
-			gun.get_parent().remove_child(gun)
-		weapon_holder.add_child(gun)
-
-	gun.transform = Transform3D.IDENTITY
-	gun.position  = default_gun_position
-	gun.rotation  = Vector3.ZERO
-	gun.scale     = Vector3.ONE
-
-	_set_active_recursive(gun, true)
-	gun.equip(camera, player)
-	_play_switch_sound()
-
-	print("[WeaponManager] Equipped: %s (%d/%d)" % [gun.name, current_index + 1, weapons.size()])
-	weapon_changed.emit(gun)
-	weapon_equipped.emit(gun, current_index, weapons.size())
-
-# ===============================
-# ACTIONS
-# ===============================
-func try_shoot() -> void:
-	var gun := get_current_weapon()
-	if gun == null:
+	if not is_instance_valid(current_weapon):
+		push_error("[WM] Weapon at index %d invalid." % index)
+		current_weapon = null; current_index = -1
 		return
-	# If out of ammo, auto-reload instead of dry-firing
-	if "current_ammo" in gun and gun.current_ammo <= 0:
-		try_reload()
-		return
-	gun.shoot()
 
-func try_reload() -> void:
-	var gun := get_current_weapon()
-	if gun == null:
-		return
-	if gun.has_method("reload"):
-		gun.reload()
-	else:
-		push_warning("[WeaponManager] Current gun has no reload() method.")
+	_push_refs_to_weapon(current_weapon)
+	_force_show(current_weapon)
+	_call_safe(current_weapon, "equip", [camera, player])
 
-func get_current_weapon() -> BaseGun:
-	if current_index < 0 or weapons.is_empty():
-		return null
-	return weapons[current_index]
+	print("[WM] Equipped [%d] %s | visible=%s | global_pos=%s | camera=%s" % [
+		index, current_weapon.name, str(current_weapon.visible),
+		str(current_weapon.global_position), camera.name])
 
-func get_weapon_count() -> int:
-	return weapons.size()
+	weapon_equipped.emit(current_weapon)
 
-func has_weapon_at(index: int) -> bool:
-	return index >= 0 and index < weapons.size()
+	if is_instance_valid(player) and player.has_method("on_weapon_equipped"):
+		player.call("on_weapon_equipped", current_weapon)
 
-# ===============================
-# SWITCH SOUND
-# ===============================
-func _play_switch_sound() -> void:
-	if not is_instance_valid(switch_sound):
-		return
-	switch_sound.stop()
-	switch_sound.play()
+	if play_sound: _play_switch_sound()
 
-# ===============================
-# RECURSIVE ACTIVATION
-# ===============================
-func _set_active_recursive(node: Node, active: bool) -> void:
-	if node is Node3D:
-		(node as Node3D).visible = active
-	node.set_process(active)
-	node.set_physics_process(active)
+
+func _force_show(w: Node3D) -> void: _set_branch_visible(w, true)
+func _force_hide(w: Node3D) -> void: _set_branch_visible(w, false)
+
+func _set_branch_visible(node: Node3D, v: bool) -> void:
+	if not is_instance_valid(node): return
+	node.visible = v
 	for child in node.get_children():
-		_set_active_recursive(child, active)
+		if child is Node3D:
+			_set_branch_visible(child as Node3D, v)
 
-# ===============================
-# AUTO COLLECT GUNS
-# ===============================
-func _collect_guns(root: Node) -> void:
-	for child in root.get_children():
-		if child is BaseGun:
-			weapons.append(child)
-		else:
-			_collect_guns(child)
+func set_all_visible(v: bool) -> void:
+	if v:
+		if is_instance_valid(current_weapon): _force_show(current_weapon)
+	else:
+		for w in weapons:
+			if is_instance_valid(w): _force_hide(w)
 
-# ===============================
-# FIND PLAYER + CAMERA
-# ===============================
-func _find_player() -> Node:
-	var n : Node = get_parent()
-	while is_instance_valid(n):
-		if n.get("team_id") != null:
-			return n
-		n = n.get_parent()
-	return null
 
-func _find_camera(root: Node) -> Camera3D:
-	if root is Camera3D:
-		return root as Camera3D
-	for child in root.get_children():
-		var result := _find_camera(child)
-		if result:
-			return result
-	return null
+func _push_refs_to_all() -> void:
+	for w in weapons: _push_refs_to_weapon(w)
 
-func _is_shop_open() -> bool:
-	if not is_instance_valid(player):
-		return false
-	if player.has_method("_is_shop_panel_open"):
-		return player._is_shop_panel_open()
-	return false
+func _push_refs_to_weapon(w: Node3D) -> void:
+	if not is_instance_valid(w): return
+	if "camera" in w: w.set("camera", camera)
+	if "player" in w: w.set("player", player)
+	if w.has_method("set_camera"): w.call("set_camera", camera)
+	if w.has_method("set_player"): w.call("set_player", player)
+
+
+func switch_weapon(direction: int) -> void:
+	if weapons.size() <= 1: return
+	_equip(posmod(current_index + direction, weapons.size()), true)
+
+func equip_by_index(index: int) -> void: _equip(index, true)
+
+func equip_by_name(weapon_name: String) -> void:
+	for i in weapons.size():
+		if is_instance_valid(weapons[i]) and weapons[i].name == weapon_name:
+			_equip(i, true); return
+	push_warning("[WM] No weapon named '%s'." % weapon_name)
+
+
+func try_shoot()  -> void: _call_safe(current_weapon, "shoot")
+func try_reload() -> void: _call_safe(current_weapon, "reload")
+func stop_shoot() -> void: _call_safe(current_weapon, "stop_shoot")
+
+func get_current_weapon() -> Node3D: return current_weapon
+func get_weapon_count()   -> int:    return weapons.size()
+
+func get_aim_direction() -> Vector3:
+	if not is_instance_valid(camera): return Vector3.FORWARD
+	var center := camera.get_viewport().get_visible_rect().size * 0.5
+	return camera.project_ray_normal(center)
+
+func get_aim_origin() -> Vector3:
+	if not is_instance_valid(camera):
+		return player.global_position if is_instance_valid(player) else Vector3.ZERO
+	var center := camera.get_viewport().get_visible_rect().size * 0.5
+	return camera.project_ray_origin(center)
+
+
+func apply_player_upgrade(stat: String, amount: float) -> void:
+	for w : Node3D in weapons:
+		if not is_instance_valid(w): continue
+		match stat:
+			"damage":      if "damage"      in w: w.set("damage",      float(w.get("damage"))      + amount)
+			"fire_rate":   if "fire_rate"   in w: w.set("fire_rate",   maxf(float(w.get("fire_rate"))   - amount, 0.05))
+			"reload_time": if "reload_time" in w: w.set("reload_time", maxf(float(w.get("reload_time")) - amount, 0.1))
+			"max_ammo":    if "max_ammo"    in w: w.set("max_ammo",    int(w.get("max_ammo"))       + int(amount))
+			"range":       if "range"       in w: w.set("range",       float(w.get("range"))        + amount)
+			"spread":      if "spread"      in w: w.set("spread",      maxf(float(w.get("spread"))  - amount, 0.0))
+
+func get_weapons_of_type(type_key: String) -> Array:
+	var result : Array = []
+	var key := type_key.to_lower()
+	for w : Node3D in weapons:
+		if not is_instance_valid(w): continue
+		var wname := w.name.to_lower()
+		var wscript := ""
+		if w.get_script(): wscript = (w.get_script() as Script).resource_path.to_lower()
+		if key in wname or key in wscript: result.append(w)
+	return result
+
+
+func _call_safe(node: Node, method: String, args: Array = []) -> void:
+	if not is_instance_valid(node): return
+	if not node.has_method(method): return
+	node.callv(method, args)
+
+func _play_switch_sound() -> void:
+	if is_instance_valid(switch_sound): switch_sound.play()
+
+func debug_print_weapons() -> void:
+	print("=== WM DEBUG  weapons=%d  idx=%d  cam=%s ===" % [
+		weapons.size(), current_index, camera.name if is_instance_valid(camera) else "NULL"])
+	for i in weapons.size():
+		if is_instance_valid(weapons[i]):
+			var w := weapons[i]
+			print("  [%d] %s  vis=%s  gpos=%s" % [i, w.name, str(w.visible), str(w.global_position)])

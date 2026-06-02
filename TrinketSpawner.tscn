@@ -1,0 +1,8 @@
+[gd_scene format=3 uid="uid://b8xe12psq7j7x"]
+
+[ext_resource type="Script" uid="uid://bybpxkdcino2c" path="res://TrinketSpawner.gd" id="1_tskdm"]
+[ext_resource type="PackedScene" uid="uid://cnxbmrb36g7c3" path="res://trinketpickup.tscn" id="2_a7jhw"]
+
+[node name="TrinketSpawner" type="Node3D" unique_id=1052923093]
+script = ExtResource("1_tskdm")
+trinket_scene = ExtResource("2_a7jhw")

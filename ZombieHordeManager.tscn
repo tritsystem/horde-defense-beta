@@ -1,0 +1,8 @@
+[gd_scene format=3 uid="uid://c0unprfi3eucq"]
+
+[ext_resource type="Script" uid="uid://bgxh5bgbmgd7g" path="res://ZombieHordeManager.gd" id="1_rabko"]
+[ext_resource type="PackedScene" uid="uid://db0dyfgdh1epi" path="res://zombie/zombie.tscn" id="2_wc8q6"]
+
+[node name="ZombieHordeManager" type="Node3D" unique_id=381404641]
+script = ExtResource("1_rabko")
+zombie_scene = ExtResource("2_wc8q6")

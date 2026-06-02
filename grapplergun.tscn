@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cn3vqnouvicoa"]
+
+[ext_resource type="Script" uid="uid://r65fe0450ayg" path="res://grapplergun.gd" id="1_pr77j"]
+
+[node name="grapplergun" type="Node3D" unique_id=663742646]
+script = ExtResource("1_pr77j")

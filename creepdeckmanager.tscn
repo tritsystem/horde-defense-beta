@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dtg3f5w4h8a36"]
+
+[ext_resource type="Script" uid="uid://cgh8hk2f8qxf3" path="res://Creepdeckmanager.gd" id="1_ptetk"]
+
+[node name="Creepdeckmanager" type="Node3D" unique_id=117241480]
+script = ExtResource("1_ptetk")

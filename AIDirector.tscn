@@ -1,0 +1,596 @@
+[gd_scene format=3 uid="uid://dl1cf5gbg2vw4"]
+
+[sub_resource type="GDScript" id="GDScript_n60yr"]
+script/source = "# ============================================================
+# AIDirector.gd — AUTOLOAD  v2.2 FIXED (Null-safe)
+# ============================================================
+extends Node
+
+# ── TUNING ───────────────────────────────────────────────────
+const THREAT_DECAY_RATE    : float = 0.15
+const THREAT_KILL_BONUS    : float = 1.0
+const THREAT_SPAWN_BONUS   : float = 2.0
+const THREAT_HIGH          : float = 8.0
+const RETARGET_HZ          : float = .05
+
+const WAVE_BASE_COUNT      : int   = 20
+const WAVE_SCALE           : float = 1.35
+const WAVE_INTERVAL_BASE   : float = 45.0
+const WAVE_INTERVAL_MIN    : float = 12.0
+const DIFFICULTY_RAMP_TIME : float = 600.0
+
+const SPAWN_ZONE_RADIUS    : float = 4.0
+const BASE_ATTACK_RANGE    : float = 25.0
+const STRUCTURE_PRIORITY   : float = 50.0
+
+# Per-lane world-space offsets from the friendly base.
+const LANE_OFFSETS : Array = [
+	Vector3(-15.0, 0.0, 0.0),   # TOP
+	Vector3(  0.0, 0.0, 0.0),   # MID
+	Vector3( 15.0, 0.0, 0.0),   # BOT
+]
+
+# ── LANE TABLE ───────────────────────────────────────────────
+var lanes : Dictionary = {
+	1: { \"pressure\": 0.0, \"active\": true },
+	2: { \"pressure\": 0.0, \"active\": true },
+	3: { \"pressure\": 0.0, \"active\": true },
+}
+
+# Scene node refs
+var _enemy_base    : Node3D = null
+var _friendly_base : Node3D = null
+
+# ── STATE ─────────────────────────────────────────────────────
+var _threat_map        : Dictionary = {}
+var _wave_number       : int        = 0
+var _wave_timer        : float      = 0.0
+var _retarget_timer    : float      = 0.0
+var _elapsed           : float      = 0.0
+var _lane_zombie_count : Dictionary = {}
+var _pending_targets   : Dictionary = {}
+var _bases_ready       : bool       = false
+
+var _cached_enemy_units      : Array = []
+var _cached_enemy_structures : Array = []
+var _cache_dirty             : bool  = true
+
+signal wave_started(wave_number: int, count: int, lane_distribution: Dictionary)
+signal wave_exhausted
+signal threat_zone_critical(zone: Vector2i)
+signal lane_under_assault(lane_id: int, zombie_count: int)
+signal base_under_attack(team: int, damage: float)
+
+var _zhm        = null
+var _scene_tree : SceneTree = null
+
+
+# ============================================================
+func _ready() -> void:
+	_scene_tree = get_tree()
+	for lid in lanes:
+		_lane_zombie_count[lid] = 0
+	call_deferred(\"_deferred_setup\")
+	_wave_timer = 9e9  # Disable autonomous wave spawning
+
+
+func _deferred_setup() -> void:
+	_connect_to_manager()
+	# Try to init bases immediately
+	_init_bases()
+	
+	# If bases not found, wait and retry
+	if not _friendly_base or not _enemy_base:
+		print(\"[AIDirector] Waiting for bases to be ready...\")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_init_bases()  # Try again
+	
+	if _friendly_base and _enemy_base:
+		_build_lane_waypoints()
+		_bases_ready = true
+		print(\"[AIDirector] Ready — lanes initialized\")
+	else:
+		push_error(\"[AIDirector] Could not find bases after retry!\")
+
+
+func _connect_to_manager() -> void:
+	_zhm = get_node_or_null(\"/root/ZombieHordeManager\")
+	if _zhm == null:
+		push_warning(\"[AIDirector] ZombieHordeManager autoload not found.\")
+		return
+	if _zhm.has_signal(\"zombie_died\"):
+		_zhm.zombie_died.connect(_on_zombie_died)
+	if _zhm.has_signal(\"zombie_damaged_player\"):
+		_zhm.zombie_damaged_player.connect(_on_zombie_damaged_player)
+
+
+# ── BASE INIT ────────────────────────────────────────────────
+func _init_bases() -> void:
+	var zt := zombie_team_id()
+	
+	# Clear existing refs
+	_enemy_base = null
+	_friendly_base = null
+	
+	for b in _scene_tree.get_nodes_in_group(\"bases\"):
+		if not is_instance_valid(b): 
+			continue
+		if not (\"team_id\" in b):
+			continue
+		var bt : int = int(b.team_id)
+		if bt == zt:
+			_friendly_base = b as Node3D
+			print(\"[AIDirector] Found friendly base: %s (team %d)\" % [b.name, bt])
+		else:
+			_enemy_base = b as Node3D
+			print(\"[AIDirector] Found enemy base: %s (team %d)\" % [b.name, bt])
+
+	if not is_instance_valid(_enemy_base):
+		push_warning(\"[AIDirector] Could not find enemy base. Looking again later...\")
+	if not is_instance_valid(_friendly_base):
+		push_warning(\"[AIDirector] Could not find friendly base. Looking again later...\")
+
+
+# ── WAYPOINT GENERATION ────────────────────────────────────
+func _build_lane_waypoints() -> void:
+	# Safety check - ensure bases exist
+	if not is_instance_valid(_friendly_base):
+		push_error(\"[AIDirector] Cannot build waypoints: friendly_base is null!\")
+		return
+	if not is_instance_valid(_enemy_base):
+		push_error(\"[AIDirector] Cannot build waypoints: enemy_base is null!\")
+		return
+	
+	var friendly_pos : Vector3 = _friendly_base.global_position
+	var enemy_pos : Vector3 = _enemy_base.global_position
+	
+	print(\"[AIDirector] Building waypoints from %s to %s\" % [friendly_pos, enemy_pos])
+	
+	var lane_keys : Array = lanes.keys()
+	for i in lane_keys.size():
+		var lid    : int     = lane_keys[i]
+		var offset : Vector3 = LANE_OFFSETS[mini(i, LANE_OFFSETS.size() - 1)]
+
+		var spawn_pos : Vector3 = friendly_pos + offset
+		var end_pos   : Vector3 = enemy_pos + offset * 0.5
+
+		var wps : Array[Vector3] = []
+		for step in range(5):  # 5 waypoints including endpoints
+			var t : float = float(step) / 4.0
+			wps.append(spawn_pos.lerp(end_pos, t))
+		# Last waypoint is the exact enemy-base position
+		wps[4] = enemy_pos
+
+		lanes[lid][\"spawn\"]      = spawn_pos
+		lanes[lid][\"waypoints\"]  = wps
+		lanes[lid][\"enemy_base\"] = enemy_pos
+		
+		print(\"[AIDirector] Lane %d: spawn=%s, %d waypoints\" % [lid, spawn_pos, wps.size()])
+
+
+# ── Lane accessors ──────────────────────────────────────────
+func _lane_waypoints(lane_id: int) -> Array[Vector3]:
+	if not lanes.has(lane_id):
+		return []
+	if not lanes[lane_id].has(\"waypoints\"):
+		return []
+	var wps = lanes[lane_id][\"waypoints\"]
+	if wps is Array:
+		return wps as Array[Vector3]
+	return []
+
+
+func _lane_spawn(lane_id: int) -> Vector3:
+	if not lanes.has(lane_id):
+		return Vector3.ZERO
+	return lanes[lane_id].get(\"spawn\", Vector3.ZERO)
+
+
+func _lane_enemy_base(lane_id: int) -> Vector3:
+	if not lanes.has(lane_id):
+		return Vector3.ZERO
+	return lanes[lane_id].get(\"enemy_base\", Vector3.ZERO)
+
+
+func _lane_active(lane_id: int) -> bool:
+	if not lanes.has(lane_id):
+		return false
+	return lanes[lane_id].get(\"active\", true)
+
+
+func _lane_pressure(lane_id: int) -> float:
+	if not lanes.has(lane_id):
+		return 0.0
+	return float(lanes[lane_id].get(\"pressure\", 0.0))
+
+
+func _set_lane_pressure(lane_id: int, v: float) -> void:
+	if lanes.has(lane_id):
+		lanes[lane_id][\"pressure\"] = v
+
+
+# ============================================================
+# PROCESS
+# ============================================================
+func _process(delta: float) -> void:
+	if not is_instance_valid(_zhm): 
+		return
+	if not _bases_ready: 
+		return
+
+	_elapsed        += delta
+	_wave_timer     -= delta
+	_retarget_timer -= delta
+
+	_decay_threat(delta)
+	_update_lane_pressures()
+
+	if _retarget_timer <= 0.0:
+		_retarget_timer = 1.0 / RETARGET_HZ
+		_cache_dirty    = true
+		_assign_targets_to_active_zombies()
+
+	_flush_command_queue()
+
+	if _wave_timer <= 0.0:
+		_spawn_wave()
+
+
+# ── LANE PRESSURE ─────────────────────────────────────────────
+func _update_lane_pressures() -> void:
+	for lid in lanes:
+		if not _lane_active(lid): 
+			continue
+		var wps := _lane_waypoints(lid)
+		if wps.is_empty(): 
+			continue
+		var pressure : float = 0.0
+		for wp in wps:
+			pressure += get_threat(wp)
+		var last_wp   : Vector3 = wps[wps.size() - 1]
+		var dist_frac : float   = clampf(
+			last_wp.distance_to(_lane_enemy_base(lid)) / 100.0, 0.0, 1.0)
+		pressure += (1.0 - dist_frac) * 5.0
+		_set_lane_pressure(lid, pressure / float(wps.size()))
+
+
+func get_most_pressured_lane() -> int:
+	var best_lane     : int   = -1
+	var best_pressure : float = -1.0
+	for lid in lanes:
+		if _lane_active(lid) and _lane_pressure(lid) > best_pressure:
+			best_pressure = _lane_pressure(lid)
+			best_lane     = lid
+	if best_lane == -1:
+		for lid in lanes:
+			if _lane_active(lid): 
+				return lid
+	return best_lane
+
+
+# ── WAVE SPAWNING ─────────────────────────────────────────────
+func _spawn_wave() -> void:
+	if not _bases_ready:
+		_wave_timer = 5.0
+		return
+	if not is_instance_valid(_zhm) or not _zhm.has_method(\"spawn_horde\"):
+		push_warning(\"[AIDirector] ZombieHordeManager.spawn_horde() not found.\")
+		_wave_timer = WAVE_INTERVAL_BASE
+		return
+
+	_wave_number += 1
+	var difficulty : float = clampf(_elapsed / DIFFICULTY_RAMP_TIME, 0.0, 1.0)
+	var total      : int   = int(float(WAVE_BASE_COUNT) * pow(WAVE_SCALE, float(_wave_number - 1)))
+	_wave_timer            = lerpf(WAVE_INTERVAL_BASE, WAVE_INTERVAL_MIN, difficulty)
+
+	var active_lanes : Array = []
+	for lid in lanes:
+		if _lane_active(lid): 
+			active_lanes.append(lid)
+	if active_lanes.is_empty():
+		push_warning(\"[AIDirector] No active lanes — wave skipped.\")
+		return
+
+	var distribution : Dictionary = {}
+	for lid in active_lanes:
+		distribution[lid] = 0
+
+	var half           : int   = int(total * 0.5)
+	var total_pressure : float = 0.0
+	for lid in active_lanes:
+		total_pressure += _lane_pressure(lid)
+
+	var pressure_assigned : int = 0
+	if total_pressure > 0.0:
+		for lid in active_lanes:
+			var share : int = int(float(half) * _lane_pressure(lid) / total_pressure)
+			distribution[lid] += share
+			pressure_assigned  += share
+
+	var remaining : int = total - pressure_assigned
+	var per_lane  : int = int(float(remaining) / float(active_lanes.size()))
+	for lid in active_lanes:
+		distribution[lid] += per_lane
+
+	for lid in distribution:
+		var count : int = distribution[lid]
+		if count <= 0: 
+			continue
+
+		var spawn : Vector3        = _lane_spawn(lid)
+		var wps   : Array[Vector3] = _lane_waypoints(lid)
+		var area  := AABB(
+			spawn - Vector3(SPAWN_ZONE_RADIUS, 0.0, SPAWN_ZONE_RADIUS),
+			Vector3(SPAWN_ZONE_RADIUS * 2.0, 2.0, SPAWN_ZONE_RADIUS * 2.0))
+
+		var spawned : Array = _zhm.spawn_horde(count, area, zombie_team_id())
+		for z in spawned:
+			if not is_instance_valid(z): 
+				continue
+			_apply_identity(z)
+			if z.has_method(\"set_lane\") and not wps.is_empty():
+				z.set_lane(wps, lid)
+			_lane_zombie_count[lid] = int(_lane_zombie_count.get(lid, 0)) + 1
+
+		add_threat(spawn, THREAT_SPAWN_BONUS * float(count))
+
+	wave_started.emit(_wave_number, total, distribution)
+	print(\"[AIDirector] Wave %d — %d zombies — difficulty %.2f\"
+		% [_wave_number, total, difficulty])
+
+
+func _apply_identity(z: Node) -> void:
+	if \"team_id\" in z: 
+		z.set(\"team_id\", zombie_team_id())
+	if \"enemy_base\" in z and is_instance_valid(_enemy_base): 
+		z.set(\"enemy_base\", _enemy_base)
+	if \"friendly_base\" in z and is_instance_valid(_friendly_base): 
+		z.set(\"friendly_base\", _friendly_base)
+
+
+# ── TARGET ASSIGNMENT ─────────────────────────────────────────
+func _assign_targets_to_active_zombies() -> void:
+	if not is_instance_valid(_zhm): 
+		return
+
+	var zombie_team : int = zombie_team_id()
+
+	if _cache_dirty:
+		_cache_dirty             = false
+		_cached_enemy_units.clear()
+		_cached_enemy_structures.clear()
+
+		for u in _scene_tree.get_nodes_in_group(\"units\"):
+			if not is_instance_valid(u): continue
+			if not (\"team_id\" in u): continue
+			if int(u.team_id) == zombie_team: continue
+			_cached_enemy_units.append(u)
+
+		for s in _scene_tree.get_nodes_in_group(\"structures\"):
+			if not is_instance_valid(s): continue
+			if not (\"team_id\" in s): continue
+			if int(s.team_id) == zombie_team: continue
+			_cached_enemy_structures.append(s)
+
+		for b in _scene_tree.get_nodes_in_group(\"bases\"):
+			if not is_instance_valid(b): continue
+			if not (\"team_id\" in b): continue
+			if int(b.team_id) == zombie_team: continue
+			if not _cached_enemy_structures.has(b):
+				_cached_enemy_structures.append(b)
+
+	for z in _scene_tree.get_nodes_in_group(\"zombies\"):
+		if not is_instance_valid(z): continue
+		if not (\"team_id\" in z) or int(z.team_id) != zombie_team: continue
+		if z.has_method(\"get_lod\") and z.get_lod() >= 2: continue
+
+		if \"_target_lock\" in z and float(z._target_lock) > 1.0: continue
+		if \"_lane_target\" in z and is_instance_valid(z.get(\"_lane_target\")): continue
+
+		var z_pos     : Vector3 = z.global_position
+		var det_range : float   = float(z.detection_range) if \"detection_range\" in z else 20.0
+		var z_lane    : int     = z.get_lane() if z.has_method(\"get_lane\") else -1
+		var best      : Node3D  = null
+		var best_d    : float   = BASE_ATTACK_RANGE
+
+		for s in _cached_enemy_structures:
+			if not is_instance_valid(s): continue
+			var d : float = z_pos.distance_to((s as Node3D).global_position)
+			if d < best_d:
+				best_d = d
+				best   = s as Node3D
+				if (s as Node).is_in_group(\"bases\"):
+					base_under_attack.emit(int((s as Object).get(\"team_id\")), 1.0)
+
+		if not is_instance_valid(best) and z_lane != -1 and lanes.has(z_lane):
+			var wps := _lane_waypoints(z_lane)
+			for u in _cached_enemy_units:
+				if not is_instance_valid(u): continue
+				var u_pos   : Vector3 = (u as Node3D).global_position
+				var on_lane : bool    = false
+				for wp in wps:
+					if u_pos.distance_to(wp) < 15.0: 
+						on_lane = true
+						break
+				if not on_lane: 
+					continue
+				var d : float = z_pos.distance_to(u_pos)
+				if d < minf(det_range, best_d): 
+					best_d = d
+					best = u as Node3D
+
+		if not is_instance_valid(best):
+			best_d = det_range
+			for u in _cached_enemy_units:
+				if not is_instance_valid(u): continue
+				var d : float = z_pos.distance_to((u as Node3D).global_position)
+				if d < best_d: 
+					best_d = d
+					best = u as Node3D
+
+		if is_instance_valid(best) and \"team_id\" in best:
+			if int(best.get(\"team_id\")) != zombie_team:
+				_pending_targets[z] = best
+
+
+func _flush_command_queue() -> void:
+	for z in _pending_targets.keys():
+		if not is_instance_valid(z) or not is_instance_valid(_pending_targets[z]): 
+			continue
+		if not z.has_method(\"set_forced_target\"): 
+			continue
+		var target      = _pending_targets[z]
+		var zombie_team : int = int(z.get(\"team_id\")) if \"team_id\" in z else -1
+		var target_team : int = int(target.get(\"team_id\")) if \"team_id\" in target else -1
+		if zombie_team != -1 and target_team != -1 and target_team != zombie_team:
+			z.set_forced_target(target, 3.0)
+	_pending_targets.clear()
+
+
+# ── THREAT MAP ────────────────────────────────────────────────
+func _decay_threat(delta: float) -> void:
+	for key in _threat_map.keys():
+		var v : float = maxf(0.0, float(_threat_map[key]) - THREAT_DECAY_RATE * delta)
+		if v <= 0.0: 
+			_threat_map.erase(key)
+		else:        
+			_threat_map[key] = v
+
+
+func _zone_key(pos: Vector3) -> Vector2i:
+	return Vector2i(int(floor(pos.x / 32.0)), int(floor(pos.z / 32.0)))
+
+
+func add_threat(world_pos: Vector3, amount: float) -> void:
+	var key := _zone_key(world_pos)
+	_threat_map[key] = float(_threat_map.get(key, 0.0)) + amount
+	if float(_threat_map[key]) >= THREAT_HIGH:
+		threat_zone_critical.emit(key)
+
+
+func get_threat(world_pos: Vector3) -> float:
+	return float(_threat_map.get(_zone_key(world_pos), 0.0))
+
+
+# ── EVENTS ────────────────────────────────────────────────────
+func _on_zombie_died(zombie: Node, _killer_team: int) -> void:
+	if not (zombie is Node3D): 
+		return
+	add_threat((zombie as Node3D).global_position, THREAT_KILL_BONUS)
+	if zombie.has_method(\"get_lane\"):
+		var lid : int = int(zombie.get_lane())
+		if lid != -1 and _lane_zombie_count.has(lid):
+			_lane_zombie_count[lid] = max(0, int(_lane_zombie_count[lid]) - 1)
+	if is_instance_valid(_zhm) and _zhm.has_method(\"active_count\") \\
+			and int(_zhm.active_count()) == 0:
+		wave_exhausted.emit()
+	_cache_dirty = true
+
+
+func _on_zombie_damaged_player(_zombie: Node, _player: Node, _amount: float) -> void:
+	if _zombie is Node3D:
+		add_threat((_zombie as Node3D).global_position, 0.5)
+
+
+# ============================================================
+# OVERRIDE POINTS
+# ============================================================
+func zombie_team_id() -> int: return 2
+
+
+# ============================================================
+# PUBLIC API
+# ============================================================
+func command_lane_assault(lane_id: int, team: int = 2) -> void:
+	if not lanes.has(lane_id):
+		push_warning(\"[AIDirector] Invalid lane: %d\" % lane_id)
+		return
+	var wps := _lane_waypoints(lane_id)
+	var count : int = 0
+	for z in _scene_tree.get_nodes_in_group(\"zombies\"):
+		if not is_instance_valid(z): continue
+		if \"team_id\" in z and int(z.team_id) != team: continue
+		if z.has_method(\"set_lane\") and not wps.is_empty():
+			z.set_lane(wps, lane_id)
+		count += 1
+	add_threat(_lane_enemy_base(lane_id), STRUCTURE_PRIORITY)
+	lane_under_assault.emit(lane_id, count)
+
+
+func command_push_all_lanes(team: int = 2) -> void:
+	for lid in lanes:
+		if _lane_active(lid):
+			command_lane_assault(lid, team)
+
+
+func reinforce_lane(lane_id: int, zombie_count: int) -> void:
+	if not is_instance_valid(_zhm) or not _zhm.has_method(\"spawn_horde\"): 
+		return
+	var spawn : Vector3        = _lane_spawn(lane_id)
+	var wps   : Array[Vector3] = _lane_waypoints(lane_id)
+	var area  := AABB(
+		spawn - Vector3(SPAWN_ZONE_RADIUS, 0.0, SPAWN_ZONE_RADIUS),
+		Vector3(SPAWN_ZONE_RADIUS * 2.0, 2.0, SPAWN_ZONE_RADIUS * 2.0))
+	for z in _zhm.spawn_horde(zombie_count, area, zombie_team_id()):
+		if not is_instance_valid(z): continue
+		_apply_identity(z)
+		if z.has_method(\"set_lane\") and not wps.is_empty():
+			z.set_lane(wps, lane_id)
+		_lane_zombie_count[lane_id] = int(_lane_zombie_count.get(lane_id, 0)) + 1
+	add_threat(spawn, THREAT_SPAWN_BONUS * float(zombie_count))
+
+
+func director_attack(world_pos: Vector3, team: int = 2) -> void:
+	for z in _scene_tree.get_nodes_in_group(\"zombies\"):
+		if not is_instance_valid(z): continue
+		if \"team_id\" in z and int(z.team_id) != team: continue
+		if z.has_method(\"set_move_target\"):
+			z.set_move_target(world_pos)
+	add_threat(world_pos, 3.0)
+
+
+func redistribute_to_threat() -> void:
+	command_lane_assault(get_most_pressured_lane())
+
+
+func trigger_wave() -> void:
+	_wave_timer = 0.0
+
+
+func set_waves_active(active: bool) -> void:
+	_wave_timer = WAVE_INTERVAL_BASE if active else 9e9
+
+
+func get_difficulty() -> float:
+	return clampf(_elapsed / DIFFICULTY_RAMP_TIME, 0.0, 1.0)
+
+
+func get_lane_pressure(lane_id: int) -> float:
+	return _lane_pressure(lane_id) if lanes.has(lane_id) else 0.0
+
+
+func get_lane_zombie_count(lane_id: int) -> int:
+	return int(_lane_zombie_count.get(lane_id, 0))
+
+
+func get_debug_info() -> Dictionary:
+	var pressures : Dictionary = {}
+	for lid in lanes: 
+		pressures[lid] = _lane_pressure(lid)
+	return {
+		\"wave\":           _wave_number,
+		\"wave_timer\":     _wave_timer,
+		\"difficulty\":     get_difficulty(),
+		\"bases_ready\":    _bases_ready,
+		\"enemy_base\":     _enemy_base.name if is_instance_valid(_enemy_base) else \"NONE\",
+		\"friendly_base\":  _friendly_base.name if is_instance_valid(_friendly_base) else \"NONE\",
+		\"total_zombies\":  _zhm.active_count() if _zhm and _zhm.has_method(\"active_count\") else 0,
+		\"lane_pressures\": pressures,
+		\"lane_zombies\":   _lane_zombie_count.duplicate(),
+		\"threat_zones\":   _threat_map.size(),
+	}
+"
+
+[node name="AIDirector" type="Node3D" unique_id=212827851]
+script = SubResource("GDScript_n60yr")

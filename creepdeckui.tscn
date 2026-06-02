@@ -1,0 +1,12 @@
+[gd_scene format=3 uid="uid://b42joxg42x6xi"]
+
+[ext_resource type="Script" uid="uid://b2vexfh1q4qik" path="res://creepdeckui.gd" id="1_0bimx"]
+
+[node name="Creepdeckui" type="Control" unique_id=2064779633]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_0bimx")

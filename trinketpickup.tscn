@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://cnxbmrb36g7c3"]
+
+[ext_resource type="Script" uid="uid://dr5mbrctkqdxq" path="res://Trinketpickup.gd" id="1_rbgve"]
+[ext_resource type="PackedScene" uid="uid://cmbvhm666i5wm" path="res://assets/3dmodels bases/beetleguese_big_but_draining_star.glb" id="2_pb2q6"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_kt7pu"]
+radius = 0.6
+
+[node name="Trinketpickup" type="Area3D" unique_id=534619728]
+script = ExtResource("1_rbgve")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=188495864]
+transform = Transform3D(0.023999998, 0, 0, 0, 0.021599993, 0, 0, 0, 0.027999988, 0, 0, 0)
+
+[node name="Sketchfab_Scene" parent="MeshInstance3D" unique_id=1440900441 instance=ExtResource("2_pb2q6")]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=780420182]
+shape = SubResource("SphereShape3D_kt7pu")

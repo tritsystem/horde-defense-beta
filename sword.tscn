@@ -1,0 +1,13 @@
+[gd_scene format=3 uid="uid://c2kvfy0bhe8b1"]
+
+[ext_resource type="Script" uid="uid://bgisg1rbvbugh" path="res://sword.gd" id="1_74bdg"]
+[ext_resource type="AudioStream" uid="uid://bdmxid6j5m27p" path="res://audio/ESM_Sharp_Sword_Whoosh_1_Explainer_Video__Mobile_App_Game_Swish_Swoosh_Movement.wav" id="2_dwvek"]
+[ext_resource type="PackedScene" uid="uid://dovikf3sy738c" path="res://ebonchill_magic_sword.glb" id="2_e4ynd"]
+[ext_resource type="AudioStream" uid="uid://d2slvbqu6n7f4" path="res://audio/ESM_GT_cinematic_fx_inventory_sheathing_sword_ringing_01.wav" id="3_rx5id"]
+
+[node name="Sword" type="Node3D" unique_id=261257421]
+script = ExtResource("1_74bdg")
+swing_sounds = Array[AudioStream]([ExtResource("2_dwvek")])
+hit_sounds = Array[AudioStream]([ExtResource("3_rx5id")])
+
+[node name="Sketchfab_Scene" parent="." unique_id=1658784646 instance=ExtResource("2_e4ynd")]

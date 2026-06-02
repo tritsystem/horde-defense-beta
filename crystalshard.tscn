@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cavqa83sax0uo"]
+
+[ext_resource type="Script" uid="uid://d2sar5iykuw8u" path="res://crystalshard.gd" id="1_ehus7"]
+
+[node name="crystalshard" type="Node3D" unique_id=354760951]
+script = ExtResource("1_ehus7")

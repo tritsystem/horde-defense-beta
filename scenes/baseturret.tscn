@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://b3im7bub4juhq"]
+
+[ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://scenes/turret.tscn" id="1_ewm4m"]
+
+[node name="BaseTurret" type="Node3D" unique_id=1706798360]
+
+[node name="Turret" parent="." unique_id=905842201 instance=ExtResource("1_ewm4m")]

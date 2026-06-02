@@ -3,18 +3,21 @@
 [ext_resource type="Script" uid="uid://dlfgnrxuum817" path="res://scripts/rocket.gd" id="1_fj03e"]
 [ext_resource type="AudioStream" uid="uid://7rb6kug0opno" path="res://assets/sound effects/ESM_MDL_fx_foley_one_shot_backpack_crisp_saturated_drop.wav" id="2_r2l15"]
 [ext_resource type="AudioStream" uid="uid://d1orrmmbuh00y" path="res://assets/sound effects/ESM_Battle_Game_Explosion_Grenade_Close_4_Big_Hit_Bomb_Explode_Feiry_One_Shot.wav" id="3_tpb7v"]
+[ext_resource type="ArrayMesh" uid="uid://bjp3j0sceh237" path="res://assets/textures/airmissle.res" id="4_y2y7n"]
 
 [sub_resource type="SphereShape3D" id="SphereShape3D_r2l15"]
-radius = 0.2
+radius = 0.07040103
 
 [node name="Rocket" type="Node3D" unique_id=1587790962]
+transform = Transform3D(1, 0, 0, 0, 1.7, 0, 0, 0, 1.2, 0, 0, 0)
 script = ExtResource("1_fj03e")
 lifetime = 2.0
 fly_stream = ExtResource("2_r2l15")
 explosion_stream = ExtResource("3_tpb7v")
-explosion_volume_db = -5.0
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=189985636]
+transform = Transform3D(0.038399998, 0, 0, 0, 0.016799994, 0, 0, 0, 0.009999996, 0, 0, 0)
+mesh = ExtResource("4_y2y7n")
 
 [node name="Area3D" type="Area3D" parent="." unique_id=1484133780]
 

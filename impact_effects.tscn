@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://bjcb4o3jl08p3"]
+
+[ext_resource type="Script" uid="uid://jwwtenv200xm" path="res://Impacteffects.gd" id="1_8ns2r"]
+
+[node name="ImpactEffects" type="Node3D" unique_id=1973086018]
+script = ExtResource("1_8ns2r")

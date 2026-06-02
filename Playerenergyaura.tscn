@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://bl7bpe1u0504e"]
+
+[ext_resource type="Script" uid="uid://b4eu3qbwa5alc" path="res://Playerenergyaura.gd" id="1_3sgls"]
+
+[node name="PlayerEnergyAura" type="Node3D" unique_id=1174433462]
+script = ExtResource("1_3sgls")

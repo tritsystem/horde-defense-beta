@@ -2,16 +2,19 @@
 
 [ext_resource type="Script" uid="uid://c2qdj5lmap35j" path="res://scripts/turret.gd" id="1_3oylf"]
 [ext_resource type="PackedScene" uid="uid://bxm5dwqhjio2t" path="res://scenes/projectile.tscn" id="2_tjdg3"]
+[ext_resource type="PackedScene" uid="uid://b6n7i4j7g6rt1" path="res://assets/textures/turrets/machine_gun.glb" id="3_485p4"]
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_tjdg3"]
 
 [sub_resource type="CylinderShape3D" id="CylinderShape3D_tjdg3"]
 
 [node name="Turret" type="Node3D" unique_id=905842201]
+transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 0, 0)
 script = ExtResource("1_3oylf")
 projectile_scene = ExtResource("2_tjdg3")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=2080779790]
+visible = false
 mesh = SubResource("CylinderMesh_tjdg3")
 
 [node name="Muzzle" type="Node3D" parent="." unique_id=1560728988]
@@ -21,4 +24,11 @@ collision_layer = 3
 collision_mask = 3
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Area3D3" unique_id=1915064464]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
 shape = SubResource("CylinderShape3D_tjdg3")
+
+[node name="Sketchfab_Scene" parent="." unique_id=50088483 instance=ExtResource("3_485p4")]
+transform = Transform3D(0.039999988, 0, 0, 0, 0.023519998, 0, 0, 0, 0.041999985, 0, 0, 0)
+
+[node name="muzzle" type="Node3D" parent="." unique_id=1646685419]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.0189393, 1.0359534, 1.3196203e-07)

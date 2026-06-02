@@ -1,0 +1,10 @@
+[gd_scene format=3 uid="uid://d082p28fpo3gu"]
+
+[ext_resource type="Script" uid="uid://bies0vut2wqfb" path="res://fakehordemanager.gd" id="1_1wnsl"]
+[ext_resource type="PackedScene" uid="uid://db0dyfgdh1epi" path="res://zombie/zombie.tscn" id="2_1fi6n"]
+[ext_resource type="ArrayMesh" uid="uid://jrliqjh4vyxj" path="res://zombiemesh.res" id="3_q6qhb"]
+
+[node name="Fakehordemanager" type="Node3D" unique_id=1578984204]
+script = ExtResource("1_1wnsl")
+zombie_scene = ExtResource("2_1fi6n")
+mesh = ExtResource("3_q6qhb")

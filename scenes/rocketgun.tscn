@@ -3,9 +3,11 @@
 [ext_resource type="PackedScene" uid="uid://ciwqipc17iwlt" path="res://assets/textures/texture pack 1/33-50/Shotgun/Shotgun_1.fbx" id="1_iwoud"]
 [ext_resource type="Script" uid="uid://bqs584d062pvj" path="res://scripts/rocketgun.gd" id="1_o6dy7"]
 [ext_resource type="ArrayMesh" uid="uid://b807ho5a80aww" path="res://rocketgun.res" id="2_g04us"]
+[ext_resource type="PackedScene" uid="uid://dws77duy0gp5l" path="res://scenes/rocket.tscn" id="2_x6j6r"]
 
 [node name="rocketgun" type="Node3D" unique_id=747365952]
 script = ExtResource("1_o6dy7")
+rocket_scene = ExtResource("2_x6j6r")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=405656911]
 mesh = ExtResource("2_g04us")

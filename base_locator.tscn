@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dgqekxrwfond"]
+
+[ext_resource type="Script" uid="uid://dct4oocb72wyb" path="res://BaseLocator.gd" id="1_lfctk"]
+
+[node name="BaseLocator" type="Node3D" unique_id=955738021]
+script = ExtResource("1_lfctk")

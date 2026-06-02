@@ -1,0 +1,5 @@
+[gd_scene format=3 uid="uid://uya1sij8mfip"]
+
+[ext_resource type="PackedScene" uid="uid://bpb5g554l3udy" path="res://assets/3dmodels bases/upnor-castle/textures/UpnorCastle01/UpnorCastle01/upnor_castle.glb" id="1_xtwgx"]
+
+[node name="Sketchfab_Scene" unique_id=561117397 instance=ExtResource("1_xtwgx")]

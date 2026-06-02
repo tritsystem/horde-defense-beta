@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://rfamfo5wvamb"]
+
+[ext_resource type="Script" uid="uid://c60psoywddin7" path="res://FlowFieldManager.gd" id="1_2364y"]
+
+[node name="FlowFieldManager" type="Node3D" unique_id=1735928934]
+script = ExtResource("1_2364y")

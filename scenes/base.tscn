@@ -1,6 +1,8 @@
 [gd_scene format=3 uid="uid://dxxew4xmx03fo"]
 
 [ext_resource type="Script" uid="uid://b4wxj8jty8fme" path="res://scripts/basenode.gd" id="1_rpg24"]
+[ext_resource type="Texture2D" uid="uid://rapdwbde5psr" path="res://assets/3dmodels bases/upnor-castle/textures/UpnorCastle01/UpnorCastle01/upnor_castle_1.jpg" id="2_baglu"]
 
 [node name="Base" type="Node3D" unique_id=1425730231]
 script = ExtResource("1_rpg24")
+castle_skin = ExtResource("2_baglu")

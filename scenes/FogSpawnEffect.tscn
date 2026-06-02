@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dferyunyslqrk"]
+
+[ext_resource type="Script" uid="uid://brs0o1hpop8cb" path="res://Fogspawneffect.gd" id="1_xcmrj"]
+
+[node name="FogSpawnEffect" type="Node3D" unique_id=1161149555]
+script = ExtResource("1_xcmrj")

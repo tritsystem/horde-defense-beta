@@ -1,10 +1,8 @@
 [gd_scene format=3 uid="uid://dbd7lekq5h7rl"]
 
-[ext_resource type="Script" uid="uid://qi2hufvqo0xt" path="res://scripts/forest_spawner.gd" id="1_e1xwq"]
-[ext_resource type="PackedScene" uid="uid://bftju72m75lqt" path="res://assets/textures/retro_nature_pack/models/FBX/trees/tree04.fbx" id="2_h3mcu"]
+[ext_resource type="Script" uid="uid://bkm8gi7bvqed0" path="res://forestspawner.gd" id="1_vigny"]
 
 [node name="ForestSpawner" type="Node3D" unique_id=1507311069]
-script = ExtResource("1_e1xwq")
-tree_scenes = Array[PackedScene]([ExtResource("2_h3mcu")])
+script = ExtResource("1_vigny")
 
 [node name="NavigationObstacle3D" type="NavigationObstacle3D" parent="." unique_id=1903943776]

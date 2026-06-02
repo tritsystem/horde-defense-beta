@@ -1,0 +1,38 @@
+[gd_scene format=3 uid="uid://bwbhfs1toa3ma"]
+
+[ext_resource type="Script" uid="uid://mr7i2vi4kv6i" path="res://baseturret.gd" id="1_88a74"]
+[ext_resource type="AudioStream" uid="uid://fmpyga08nqd" path="res://audio/GunshotMachineGun_BW.56649.wav" id="2_u8j3v"]
+[ext_resource type="AudioStream" uid="uid://cg322n5hvmtvj" path="res://audio/ESM_FG_FX_one_shot_farming_hammer_hit_metal_thin_steel_fence_post_beam_06.wav" id="3_50e3m"]
+[ext_resource type="PackedScene" uid="uid://b6n7i4j7g6rt1" path="res://assets/textures/turrets/machine_gun.glb" id="3_u8j3v"]
+[ext_resource type="AudioStream" uid="uid://c81q7ma5lmd50" path="res://assets/sound effects/GrenadeLauncher_S08WA.238.wav" id="4_iad7r"]
+[ext_resource type="AudioStream" uid="uid://cfdqewrwqrn65" path="res://assets/sound effects/VideoGameAscend_S08TE.1288.wav" id="5_50e3m"]
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_tjdg3"]
+
+[sub_resource type="CylinderShape3D" id="CylinderShape3D_tjdg3"]
+
+[node name="Turret" type="Node3D" unique_id=905842201]
+transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 0, 0, 0)
+script = ExtResource("1_88a74")
+sfx_fire = ExtResource("2_u8j3v")
+sfx_fire_volume_db = -34.5
+sfx_hit = ExtResource("3_50e3m")
+sfx_death = ExtResource("4_iad7r")
+sfx_upgrade = ExtResource("5_50e3m")
+sfx_upgrade_volume_db = -22.5
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=2080779790]
+visible = false
+mesh = SubResource("CylinderMesh_tjdg3")
+
+[node name="Muzzle" type="Node3D" parent="." unique_id=1560728988]
+
+[node name="Area3D3" type="Area3D" parent="." unique_id=495339905]
+collision_layer = 3
+collision_mask = 3
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Area3D3" unique_id=1915064464]
+shape = SubResource("CylinderShape3D_tjdg3")
+
+[node name="Sketchfab_Scene" parent="." unique_id=50088483 instance=ExtResource("3_u8j3v")]
+transform = Transform3D(0.039999988, 0, 0, 0, 0.023519998, 0, 0, 0, 0.041999985, 0, 0, 0)

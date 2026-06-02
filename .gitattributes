@@ -11,3 +11,9 @@
 *.exr filter=lfs diff=lfs merge=lfs -text
 /assets/sound[[:space:]]effects/qwantani_night_puresky_4k.exr filter=lfs diff=lfs merge=lfs -text
 /assets/textures/qwantani_night_puresky_4k.exr filter=lfs diff=lfs merge=lfs -text
+/assets/3dmodels[[:space:]]bases/upnor-castle.zip filter=lfs diff=lfs merge=lfs -text
+/assets/3dmodels[[:space:]]bases/upnor-castle/source/UpnorCastle01.zip filter=lfs diff=lfs merge=lfs -text
+/assets/3dmodels[[:space:]]bases/upnor-castle/textures/UpnorCastle01/UpnorCastle01.obj filter=lfs diff=lfs merge=lfs -text
+/assets/3dmodels[[:space:]]bases/upnor-castle/textures/UpnorCastle01/UpnorCastle01/UpnorCastle01.obj filter=lfs diff=lfs merge=lfs -text
+/main.tscn filter=lfs diff=lfs merge=lfs -text
+/terrain.tscn filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,15 @@
+[gd_scene format=3 uid="uid://bbubsxc6unqo0"]
+
+[ext_resource type="Script" uid="uid://dyny4xfjethh0" path="res://Scenesetup.gd" id="1_rjdyt"]
+[ext_resource type="PackedScene" uid="uid://c7igcb1g8bkmy" path="res://scenes/splitscreenmanager.tscn" id="2_y4jgh"]
+[ext_resource type="Script" path="res://splitscreenmanager.gd" id="3_7k4wy"]
+[ext_resource type="PackedScene" uid="uid://b1ip17y5bqkff" path="res://scenes/Player.tscn" id="4_4ssbd"]
+[ext_resource type="PackedScene" uid="uid://704u0nxbywdn" path="res://scenes/ui.tscn" id="5_4fy7t"]
+
+[node name="SceneSetup" type="Node3D" unique_id=1334399988]
+script = ExtResource("1_rjdyt")
+
+[node name="Splitscreenmanager" parent="." unique_id=408104655 instance=ExtResource("2_y4jgh")]
+script = ExtResource("3_7k4wy")
+player_scene = ExtResource("4_4ssbd")
+hud_scene = ExtResource("5_4fy7t")

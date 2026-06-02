@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://jgu28eto1ajc"]
+
+[ext_resource type="Script" uid="uid://dmtsk4n8mni2g" path="res://MainMenu.gd" id="1_cmhrf"]
+[ext_resource type="PackedScene" uid="uid://bv3ig6udi548a" path="res://main.tscn" id="2_h7a2f"]
+[ext_resource type="AudioStream" uid="uid://7rb6kug0opno" path="res://assets/sound effects/ESM_MDL_fx_foley_one_shot_backpack_crisp_saturated_drop.wav" id="5_7uvds"]
+
+[node name="mainmenu" type="Control" unique_id=566499924]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_cmhrf")
+game_scene = ExtResource("2_h7a2f")
+hover_sound = ExtResource("5_7uvds")
+game_title = "HORDE DEFENSE"
+game_subtitle = "SURVIVE THE NIGHT"

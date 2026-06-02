@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://de82fs1nhdmi8"]
+
+[ext_resource type="Script" uid="uid://dnok4jasohlpj" path="res://fpsboost.gd" id="1_fr6tg"]
+
+[node name="fpsboost" type="Node3D" unique_id=1396439921]
+script = ExtResource("1_fr6tg")

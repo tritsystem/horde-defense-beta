@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dml5y4st36yue"]
+
+[ext_resource type="Script" uid="uid://d1l8c503h6o28" path="res://GameOverScreen.gd" id="1_yi0f0"]
+
+[node name="GameOverScreen" type="Node3D" unique_id=997973459]
+script = ExtResource("1_yi0f0")

@@ -1,0 +1,13 @@
+[gd_scene format=3 uid="uid://bjxjrw4gvrjgq"]
+
+[ext_resource type="Script" uid="uid://dc3qgxd8bdbiw" path="res://AIPlayer.gd" id="1_rxy1j"]
+
+[node name="AIPlayer" type="Node3D" unique_id=1352049511]
+script = ExtResource("1_rxy1j")
+difficulty_preset = 4
+override_zombie_health = 20.0
+override_zombie_damage = 10.0
+override_zombie_speed = 2.0
+override_zombie_attack_cd = 1.0
+health_per_wave = 5.0
+damage_per_wave = 2.0

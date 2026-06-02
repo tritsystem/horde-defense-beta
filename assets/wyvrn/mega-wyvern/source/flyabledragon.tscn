@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://dcx0kojbiobx0"]
+
+[ext_resource type="Script" uid="uid://4xo0abn84t2e" path="res://dragon/flyabledragon.gd" id="1_hnr0g"]
+
+[node name="Flyabledragon" type="Node3D" unique_id=946187998]
+transform = Transform3D(-2.4198844, 0, -8.7422784e-08, 0, 2.4522698, 0, 2.1155302e-07, 0, -1.0000001, 0, 0, 0)
+script = ExtResource("1_hnr0g")

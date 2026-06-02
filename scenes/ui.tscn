@@ -1,0 +1,139 @@
+[gd_scene format=3 uid="uid://704u0nxbywdn"]
+
+[ext_resource type="Script" uid="uid://bt45por5c68f5" path="res://scripts/canvas_layer.gd" id="1_vsj0x"]
+[ext_resource type="Script" uid="uid://0kpyf62i72bj" path="res://scripts/shopui.gd" id="2_qsv74"]
+[ext_resource type="PackedScene" uid="uid://ga8cs2hxm2jc" path="res://scenes/turret.tscn" id="3_h1mc3"]
+[ext_resource type="PackedScene" uid="uid://c6ndyo4gd0obt" path="res://scenes/fire_turret.tscn" id="4_cof4p"]
+[ext_resource type="PackedScene" uid="uid://bjb62oa205a8f" path="res://scenes/ice_turret.tscn" id="5_f7tlh"]
+[ext_resource type="PackedScene" uid="uid://db0dyfgdh1epi" path="res://zombie/zombie.tscn" id="6_8k7j3"]
+[ext_resource type="PackedScene" uid="uid://dioax1kaqsjca" path="res://scenes/tank.tscn" id="7_jkdwc"]
+[ext_resource type="PackedScene" uid="uid://c2wwnihigntq4" path="res://zombie/shaman/shaman.tscn" id="8_rlppe"]
+[ext_resource type="PackedScene" uid="uid://c0ahfp17h3edt" path="res://zombie/Berserker/berserker.tscn" id="9_ycmcx"]
+[ext_resource type="PackedScene" uid="uid://bc8es4ec6qykt" path="res://zombie/LEAPER/leaper.tscn" id="10_kupmu"]
+[ext_resource type="PackedScene" uid="uid://5kxv47s8lksy" path="res://scenes/patrolpath.tscn" id="11_catpy"]
+[ext_resource type="PackedScene" uid="uid://djc17ofb6etpy" path="res://assets/zombies/newzombie.tscn" id="11_cof4p"]
+[ext_resource type="Script" uid="uid://3nq4ip6y53h5" path="res://scripts/upgrade_panel.gd" id="12_41akx"]
+[ext_resource type="PackedScene" uid="uid://mwf6yoddpxg7" path="res://questhud.tscn" id="15_h1mc3"]
+[ext_resource type="Script" uid="uid://dn57cxj1v8g16" path="res://scenes/killfeed.gd" id="16_cof4p"]
+
+[node name="UI" type="Control" unique_id=1460043299 groups=["ui"]]
+layout_mode = 3
+anchors_preset = 0
+
+[node name="Control" type="Control" parent="." unique_id=840115624 groups=["ui"]]
+anchors_preset = 0
+script = ExtResource("1_vsj0x")
+metadata/_edit_use_anchors_ = true
+
+[node name="HealthBar" type="TextureProgressBar" parent="Control" unique_id=1047262872 groups=["ui"]]
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.05
+anchor_top = 0.9
+anchor_right = 0.35
+anchor_bottom = 0.95
+offset_right = 40.0
+offset_bottom = 40.0
+metadata/_edit_use_anchors_ = true
+
+[node name="Wave_Label" type="Label" parent="Control" unique_id=1848386502 groups=["ui"]]
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.4
+anchor_top = 0.05
+anchor_right = 0.4
+anchor_bottom = 0.05
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="BaseHealth" type="TextureProgressBar" parent="Control" unique_id=1601738311 groups=["ui"]]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+metadata/_edit_use_anchors_ = true
+
+[node name="SHOPUI" type="Control" parent="Control" unique_id=1707225946 groups=["ui"]]
+anchors_preset = 0
+script = ExtResource("2_qsv74")
+turret_scenes = Array[PackedScene]([ExtResource("3_h1mc3"), ExtResource("4_cof4p"), ExtResource("5_f7tlh")])
+turret_costs = Array[int]([100, 100, 200, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+attack_creep_scenes = Array[PackedScene]([ExtResource("6_8k7j3")])
+attack_creep_labels = Array[String](["zombie"])
+attack_creep_costs = Array[int]([100, 0])
+defend_creep_scenes = Array[PackedScene]([ExtResource("6_8k7j3"), ExtResource("7_jkdwc"), ExtResource("8_rlppe"), ExtResource("9_ycmcx"), ExtResource("10_kupmu"), ExtResource("11_cof4p")])
+defend_creep_labels = Array[String](["Zombie", "Tank", "Shaman", "Berserker", "Leaper", "BOSSMAN"])
+defend_creep_costs = Array[int]([100, 300, 200, 250, 300, 1000])
+metadata/_edit_use_anchors_ = true
+
+[node name="patrol path" parent="Control/SHOPUI" unique_id=2079977545 instance=ExtResource("11_catpy")]
+
+[node name="MapPanel" type="Control" parent="Control" unique_id=658526547]
+visible = false
+anchors_preset = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="SubViewportContainer" type="SubViewportContainer" parent="Control/MapPanel" unique_id=143790674]
+top_level = true
+layout_mode = 0
+offset_right = 512.0
+offset_bottom = 512.0
+
+[node name="SubViewport" type="SubViewport" parent="Control/MapPanel/SubViewportContainer" unique_id=357172411]
+handle_input_locally = false
+render_target_update_mode = 0
+
+[node name="Turret root" type="Node3D" parent="Control" unique_id=771505110 groups=["ui"]]
+
+[node name="UpgradePanel" type="Panel" parent="." unique_id=1424272882 groups=["ui"]]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+script = ExtResource("12_41akx")
+metadata/_edit_use_anchors_ = true
+
+[node name="LevelLabel" type="Label" parent="UpgradePanel" unique_id=264044263 groups=["ui"]]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="DamageLabel" type="Label" parent="UpgradePanel" unique_id=1201482936 groups=["ui"]]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="CostLabel" type="Label" parent="UpgradePanel" unique_id=1564239261 groups=["ui"]]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="UpgradeButton" type="Button" parent="UpgradePanel" unique_id=270690671 groups=["ui"]]
+layout_mode = 0
+offset_right = 8.0
+offset_bottom = 8.0
+metadata/_edit_use_anchors_ = true
+
+[node name="FireRateLabel" type="Label" parent="UpgradePanel" unique_id=1132868053 groups=["ui"]]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+metadata/_edit_use_anchors_ = true
+
+[node name="CloseButton" type="Button" parent="UpgradePanel" unique_id=661301218 groups=["ui"]]
+layout_mode = 0
+offset_right = 8.0
+offset_bottom = 8.0
+metadata/_edit_use_anchors_ = true
+
+[node name="questhud" parent="." unique_id=1234945604 instance=ExtResource("15_h1mc3")]
+layout_mode = 0
+
+[node name="killfeed" type="Control" parent="." unique_id=883087892]
+anchors_preset = 0
+offset_right = 40.0
+offset_bottom = 40.0
+script = ExtResource("16_cof4p")
