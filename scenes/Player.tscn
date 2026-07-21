@@ -1607,7 +1607,7 @@ fov = 100.0
 
 [node name="SpotLight3D" type="SpotLight3D" parent="CameraRoot/FPSPivot/Camera3D" unique_id=1399056313]
 transform = Transform3D(0.9999984, 0.0017453288, 0, -0.0017453282, 0.9999987, 0, 0, 0, 1.0000001, 0, 0, 0)
-light_energy = 5.057
+light_energy = 6.068
 light_volumetric_fog_energy = 10.239
 spot_range = 78.331
 
