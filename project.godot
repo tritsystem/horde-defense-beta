@@ -49,6 +49,7 @@ DebugTuningPanel="*res://DebugTuningPanel.gd"
 AudioManager="*uid://cah0em8ab833v"
 RunSaveManager="*res://RunSaveManager.gd"
 NetworkManager="*res://NetworkManager.gd"
+CombatRelay="*res://scripts/net/CombatRelay.gd"
 
 [global_group]
 

@@ -197,6 +197,17 @@ func _fire_tick() -> void:
 				for h in get_tree().get_nodes_in_group("hud"):
 					if h.has_method("show_hitmarker"):
 						h.show_hitmarker(false); break
+		elif not hit.is_empty() and is_instance_valid(player):
+			# Non-host networked client: relay to the server (see
+			# CombatRelay.gd / basegun.gd's identical pattern) instead of
+			# resolving damage locally.
+			var tgt_b := _resolve(hit.collider)
+			if is_instance_valid(tgt_b) and not _friendly(tgt_b):
+				for h in get_tree().get_nodes_in_group("hud"):
+					if h.has_method("show_hitmarker"):
+						h.show_hitmarker(false); break
+				CombatRelay.request_hit.rpc_id(1, player.get_path(), tgt_b.get_path(), get_path(),
+												hit.position, hit.normal, "")
 
 		# Visual flame from barrel to hit point or max range
 		var end_pos   : Vector3 = hit.position if not hit.is_empty() \

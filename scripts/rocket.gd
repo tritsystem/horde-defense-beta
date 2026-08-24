@@ -147,6 +147,17 @@ func explode() -> void:
 	if is_instance_valid(_fly_audio): _fly_audio.stop()
 	if multiplayer.is_server() or not multiplayer.has_multiplayer_peer():
 		_apply_damage()
+	elif is_instance_valid(shooter):
+		# Non-host networked client: relay to CombatRelay.request_explosion,
+		# which independently re-derives the victim list server-side rather
+		# than trusting a client-supplied one (see CombatRelay.gd). NOTE:
+		# this is a real simplification vs _apply_damage() above -- the
+		# server-side re-derivation doesn't replicate self-damage, knockback,
+		# or the units/minions/turrets group-sweep fallback for client-fired
+		# rockets yet. It closes the actual gap (client rockets currently
+		# deal zero damage at all) without claiming full parity.
+		CombatRelay.request_explosion.rpc_id(1, shooter.get_path(), get_path(),
+											  global_position, explosion_radius)
 	_play_explosion_sound()
 	queue_free()
 

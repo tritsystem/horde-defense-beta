@@ -102,6 +102,10 @@ func _check_collision(from: Vector3, to: Vector3) -> void:
 		var _dn := get_tree().get_first_node_in_group("damage_numbers")
 		if is_instance_valid(_dn) and _dn.has_method("spawn_number"):
 			_dn.spawn_number(dmg, (target as Node3D).global_position + Vector3(0,1.8,0), _etp2, is_headshot)
+	elif is_instance_valid(shooter):
+		for h in get_tree().get_nodes_in_group("hud"):
+			if h.has_method("show_hitmarker"): h.show_hitmarker(false); break
+		CombatRelay.request_hit.rpc_id(1, shooter.get_path(), target.get_path(), get_path(), hit.position, hit.normal, "")
 
 	_die(true)
 

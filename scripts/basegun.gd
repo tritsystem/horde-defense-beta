@@ -153,8 +153,9 @@ func _fire() -> void:
 		if is_instance_valid(limb_zombie) and limb_zombie.has_method("detach_limb"):
 			limb_zombie.call("detach_limb", hit_limb_id, dir)
 
+	var target := _resolve_damageable(hit.collider)
+
 	if multiplayer.is_server() or not multiplayer.has_multiplayer_peer():
-		var target := _resolve_damageable(hit.collider)
 		var ie3 := get_tree().get_first_node_in_group("impact_effects")
 		if is_instance_valid(ie3):
 			if ie3.has_method("spawn_hit_spark"): ie3.spawn_hit_spark(hit.position, hit.normal)
@@ -183,6 +184,21 @@ func _fire() -> void:
 			_show_hitmarker(is_headshot)
 			if is_headshot and is_instance_valid(player) and player.has_method("record_quest_event"):
 				player.record_quest_event("headshots", 1)
+	elif is_instance_valid(target) and is_instance_valid(player):
+		# Non-host networked client: this instance has no authority to resolve
+		# damage locally (that's the gap CombatRelay closes) -- relay the hit
+		# to the server, which re-validates and computes damage from its own
+		# weapon data. Cosmetic feedback still runs immediately, unconditionally,
+		# since it doesn't need to wait on the round trip.
+		var ie3b := get_tree().get_first_node_in_group("impact_effects")
+		if is_instance_valid(ie3b):
+			if ie3b.has_method("spawn_hit_spark"): ie3b.spawn_hit_spark(hit.position, hit.normal)
+			if ie3b.has_method("spawn_shell"):
+				ie3b.spawn_shell(global_position, player.global_transform.basis.x)
+		var ss3b := get_tree().get_first_node_in_group("screen_shake")
+		if is_instance_valid(ss3b) and ss3b.has_method("gun_shot"): ss3b.gun_shot()
+		CombatRelay.request_hit.rpc_id(1, player.get_path(), target.get_path(), get_path(),
+										hit.position, hit.normal, hit_limb_id)
 
 	if is_instance_valid(player) and player.has_method("apply_recoil"):
 		player.apply_recoil(recoil * 0.01)
