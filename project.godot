@@ -12,7 +12,7 @@ config_version=5
 
 config/name="horde beta (version 1)"
 run/main_scene="uid://jgu28eto1ajc"
-config/features=PackedStringArray("4.6", "Forward Plus")
+config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
 [autoload]
@@ -24,7 +24,6 @@ GameSettings="*uid://fmp474j7t60v"
 GameOverScreen="*uid://d1l8c503h6o28"
 ZombieHordeManager="*uid://bgxh5bgbmgd7g"
 FlowFieldManager="*uid://c60psoywddin7"
-LaneSpawner="*uid://doswo68a1n0iq"
 Scenesetup="*uid://dyny4xfjethh0"
 TalentTree="*uid://ebuq4447fxcc"
 Fogspawneffect="*uid://brs0o1hpop8cb"
@@ -39,6 +38,16 @@ PauseMenu="*uid://br0typ3n2m5a1"
 Tutorial="*uid://s0lcjrdia527"
 UnitSim="*uid://qalu7xx2nwio"
 Spatialgrid="*uid://cdtr3euhffwot"
+ClassMasteryManager="*uid://cyv65iuk0pdw8"
+MutationManager="*uid://ctpgnag2w0v2"
+CorruptionManager="*uid://dijrnhipu5qn5"
+FogShrinkManager="*uid://8okqjshq65g4"
+VfxManager="*uid://cbwtbsn18mf64"
+CreepOverlay="*res://CreepOverlay.gd"
+AllyChoiceUI="*res://ally_choice_ui.gd"
+DebugTuningPanel="*res://DebugTuningPanel.gd"
+AudioManager="*uid://cah0em8ab833v"
+RunSaveManager="*res://RunSaveManager.gd"
 
 [global_group]
 
@@ -98,5 +107,5 @@ p4_shop={
 
 [rendering]
 
-rendering_device/driver.windows="d3d12"
-textures/main_scene="uid://bv3ig6udi548a"
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

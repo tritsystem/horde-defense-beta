@@ -1,4 +1,10 @@
 # ============================================================
+# ⚠ NOT LIVE — NOT AUTOLOADED, NOT INSTANTIATED (2026-07-25) ⚠
+# Not in project.godot's autoload list, and fakehordemanager.tscn isn't
+# referenced by main.tscn or any other live scene. Editing this file has
+# no effect on gameplay. Real zombie spawning lives in Egg.gd / HiveCluster.gd
+# (eggs/nests) and LaneSpawner.gd (lane delivery).
+# ============================================================
 # FakeHordeManager.gd
 # ============================================================
 # 50k fake horde units via MultiMesh + LaneFlowField

@@ -149,7 +149,9 @@ func _process(delta: float) -> void:
 
 
 func _fire_tick() -> void:
-	if not is_instance_valid(camera): return
+	if not is_instance_valid(camera):
+		push_warning("[Flamethrower] _fire_tick: camera is null — was equip() called?")
+		_stop_firing(); return
 	if current_ammo <= 0:
 		_stop_firing()
 		reload()

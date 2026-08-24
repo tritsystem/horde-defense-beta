@@ -35,6 +35,7 @@ func _setup_kbm(pid: int) -> void:
 	_add_key(pid, "move_right",    KEY_D)
 	_add_key(pid, "jump",          KEY_SPACE)
 	_add_key(pid, "sprint",        KEY_SHIFT)
+	_add_key(pid, "dash",          KEY_SHIFT)   # tap = dash, hold = sprint (topdown)
 	_add_key(pid, "reload",        KEY_R)
 	_add_key(pid, "shop",          KEY_TAB)
 	_add_mouse_btn(pid, "shoot",   MOUSE_BUTTON_LEFT)
@@ -54,6 +55,7 @@ func _setup_gamepad(pid: int, device: int) -> void:
 	_add_joy_axis(pid, "move_right",    device, JOY_AXIS_LEFT_X,      true)
 	_add_joy_btn (pid, "jump",          device, JOY_BUTTON_A)
 	_add_joy_btn (pid, "sprint",        device, JOY_BUTTON_LEFT_STICK)
+	_add_joy_btn (pid, "dash",          device, JOY_BUTTON_B)
 	_add_joy_btn (pid, "reload",        device, JOY_BUTTON_X)
 	_add_joy_btn (pid, "shop",          device, JOY_BUTTON_Y)
 	_add_joy_axis(pid, "shoot",         device, JOY_AXIS_TRIGGER_RIGHT, true)
@@ -68,7 +70,7 @@ func _setup_gamepad(pid: int, device: int) -> void:
 func _register_empty_actions(pid: int) -> void:
 	var names := [
 		"move_forward", "move_backward", "move_left", "move_right",
-		"jump", "sprint", "reload", "shop", "shoot", "aim",
+		"jump", "sprint", "dash", "reload", "shop", "shoot", "aim",
 		"prev_weapon", "next_weapon"
 	]
 	for n in names:
@@ -93,7 +95,7 @@ func _ensure_action(action: String) -> void:
 func _clear_player_actions(pid: int) -> void:
 	var names := [
 		"move_forward", "move_backward", "move_left", "move_right",
-		"jump", "sprint", "reload", "shop", "shoot", "aim",
+		"jump", "sprint", "dash", "reload", "shop", "shoot", "aim",
 		"prev_weapon", "next_weapon"
 	]
 	for n in names:

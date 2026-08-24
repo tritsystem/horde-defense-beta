@@ -9,6 +9,9 @@ extends CanvasLayer
 
 var _panel : Control = null
 var _tween : Tween = null
+var _confirm_panel : Control = null
+var _stats_row : HBoxContainer = null
+var _stat_vals : Array = []   # [waves_label, gold_label, kills_label]
 
 
 func _ready() -> void:
@@ -37,8 +40,8 @@ func _build() -> void:
 
 	var vbox := VBoxContainer.new()
 	vbox.set_anchors_preset(Control.PRESET_CENTER)
-	vbox.anchor_top = 0.4  # Move up a bit
-	vbox.anchor_bottom = 0.6
+	vbox.anchor_top = 0.1
+	vbox.anchor_bottom = 0.9
 	vbox.add_theme_constant_override("separation", 28)
 	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
 	_panel.add_child(vbox)
@@ -61,6 +64,28 @@ func _build() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(sub)
 
+	var stat_sep := ColorRect.new()
+	stat_sep.color = Color(1.0, 1.0, 1.0, 0.08)
+	stat_sep.custom_minimum_size = Vector2(520, 1)
+	vbox.add_child(stat_sep)
+
+	_stats_row = HBoxContainer.new()
+	_stats_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_stats_row.add_theme_constant_override("separation", 48)
+	vbox.add_child(_stats_row)
+
+	_stat_vals.clear()
+	var stat_labels : Array[String] = ["🌊  WAVES SURVIVED", "💰  GOLD ON HAND", "💀  ZOMBIES KILLED"]
+	for lbl_text in stat_labels:
+		var sbox : VBoxContainer = _make_stat_box(lbl_text)
+		_stat_vals.append(sbox.get_child(0))
+		_stats_row.add_child(sbox)
+
+	var btn_sep := ColorRect.new()
+	btn_sep.color = Color(1.0, 1.0, 1.0, 0.08)
+	btn_sep.custom_minimum_size = Vector2(520, 1)
+	vbox.add_child(btn_sep)
+
 	var btn_row := HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row.add_theme_constant_override("separation", 20)
@@ -75,6 +100,57 @@ func _build() -> void:
 	btn_row.add_child(btn_retry)
 	btn_row.add_child(btn_menu)
 	btn_row.add_child(btn_quit)
+
+	_build_confirm_dialog()
+
+
+func _build_confirm_dialog() -> void:
+	_confirm_panel = Control.new()
+	_confirm_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_confirm_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_confirm_panel.visible = false
+	_panel.add_child(_confirm_panel)
+
+	var dim := ColorRect.new()
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_confirm_panel.add_child(dim)
+
+	var dialog := VBoxContainer.new()
+	dialog.anchor_left   = 0.3
+	dialog.anchor_right  = 0.7
+	dialog.anchor_top    = 0.35
+	dialog.anchor_bottom = 0.65
+	dialog.add_theme_constant_override("separation", 20)
+	dialog.alignment = BoxContainer.ALIGNMENT_CENTER
+	_confirm_panel.add_child(dialog)
+
+	var lbl := Label.new()
+	lbl.text = "Quit to desktop?"
+	lbl.add_theme_font_size_override("font_size", 32)
+	lbl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.85))
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dialog.add_child(lbl)
+
+	var sub := Label.new()
+	sub.text = "This run will be lost."
+	sub.add_theme_font_size_override("font_size", 20)
+	sub.add_theme_color_override("font_color", Color(0.7, 0.65, 0.6))
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	dialog.add_child(sub)
+
+	var btn_row := HBoxContainer.new()
+	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	btn_row.add_theme_constant_override("separation", 16)
+	dialog.add_child(btn_row)
+
+	var btn_yes := _make_btn("✕  YES, QUIT", Color(0.25, 0.08, 0.08))
+	var btn_no  := _make_btn("↩  CANCEL",    Color(0.10, 0.22, 0.10))
+	btn_yes.pressed.connect(_on_confirm_quit)
+	btn_no.pressed.connect(_on_cancel_quit)
+	btn_row.add_child(btn_yes)
+	btn_row.add_child(btn_no)
 
 
 func _make_btn(text: String, color: Color) -> Button:
@@ -105,6 +181,32 @@ func _make_btn(text: String, color: Color) -> Button:
 	return b
 
 
+func _make_stat_box(label: String) -> VBoxContainer:
+	var box := VBoxContainer.new()
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_theme_constant_override("separation", 6)
+	box.custom_minimum_size = Vector2(160, 0)
+
+	var val_lbl := Label.new()
+	val_lbl.text = "—"
+	val_lbl.add_theme_font_size_override("font_size", 52)
+	val_lbl.add_theme_color_override("font_color", Color(1.0, 0.88, 0.4))
+	val_lbl.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	val_lbl.add_theme_constant_override("shadow_offset_x", 2)
+	val_lbl.add_theme_constant_override("shadow_offset_y", 2)
+	val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(val_lbl)
+
+	var desc_lbl := Label.new()
+	desc_lbl.text = label
+	desc_lbl.add_theme_font_size_override("font_size", 13)
+	desc_lbl.add_theme_color_override("font_color", Color(0.58, 0.58, 0.58))
+	desc_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(desc_lbl)
+
+	return box
+
+
 # Call this from your base _on_died():
 # GameOverScreen.show_result(winning_team_id, local_player_team_id)
 func show_result(winning_team: int, local_team: int) -> void:
@@ -126,6 +228,35 @@ func show_result(winning_team: int, local_team: int) -> void:
 		title_node.text = "YOU FAILED"
 		title_node.add_theme_color_override("font_color", Color(0.8, 0.1, 0.1))
 		sub_node.text = "The night consumed you.\nThere is no hope here."
+
+	# Populate final-stats row
+	if _stat_vals.size() == 3:
+		var waves_val : int = 0
+		var ls := get_node_or_null("/root/LaneSpawner")
+		if is_instance_valid(ls):
+			waves_val = int(ls.get("_wave_number"))
+
+		var gold_val : int = 0
+		for gm_node in get_tree().get_nodes_in_group("game_manager"):
+			if is_instance_valid(gm_node) and gm_node.has_method("get_gold"):
+				gold_val = int(gm_node.call("get_gold", local_team))
+				break
+
+		var kills_val : int = 0
+		var am := get_node_or_null("/root/AchievementManager")
+		if is_instance_valid(am):
+			var am_raw = am.get("_stats")
+			if am_raw is Dictionary:
+				var am_dict : Dictionary = am_raw
+				for pid in am_dict:
+					var entry = am_dict[pid]
+					if entry is Dictionary:
+						var pid_dict : Dictionary = entry
+						kills_val += int(pid_dict.get("kills", 0))
+
+		(_stat_vals[0] as Label).text = str(waves_val)
+		(_stat_vals[1] as Label).text = str(gold_val)
+		(_stat_vals[2] as Label).text = str(kills_val)
 
 	# Kill any existing tween
 	if _tween and _tween.is_valid():
@@ -177,6 +308,11 @@ func _hide_screen() -> void:
 
 
 func _reset_game_autoloads() -> void:
+	# End the run — wipe the save so the next session starts fresh
+	var rsm := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(rsm) and rsm.has_method("clear_save"):
+		rsm.clear_save()
+
 	var zhm := get_node_or_null("/root/ZombieHordeManager")
 	if is_instance_valid(zhm) and zhm.has_method("reset_for_new_scene"):
 		zhm.reset_for_new_scene()
@@ -222,7 +358,15 @@ func _on_main_menu() -> void:
 
 
 func _on_quit() -> void:
+	_confirm_panel.visible = true
+
+
+func _on_confirm_quit() -> void:
 	if _tween and _tween.is_valid():
 		_tween.kill()
 	get_tree().paused = false
 	get_tree().quit()
+
+
+func _on_cancel_quit() -> void:
+	_confirm_panel.visible = false

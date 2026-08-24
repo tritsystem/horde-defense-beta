@@ -15,6 +15,16 @@ extends Node
 @export var cluster_count       : int   = 8
 @export var min_cluster_spacing : float = 26.0
 @export var map_length_override : float = 0.0
+# REAL BUG FIX (2026-07-25): min_cluster_spacing (26.0) only guarded the
+# CLUSTER CENTER's distance from the player base -- it didn't account for the
+# player's own castle radius (basenode.gd's _half = 14.0) or a tier-1
+# cluster's own defense turrets, which spawn up to patrol_radius*0.85 (~11.9
+# for tier 1) out from that center IN ANY DIRECTION, including straight back
+# toward the player. Worst case, a cluster placed at exactly 26.0 could drop
+# a turret ~0.1 units outside the player's castle wall -- effectively right
+# on top of it. Enforce a much wider minimum specifically against the
+# player's base so nest turrets always land a real, noticeable distance away.
+@export var min_player_base_spacing : float = 45.0
 
 signal all_clusters_cleared
 
@@ -36,6 +46,13 @@ const TIER_EGG_SPAWN_INT : Dictionary = {1:70.0,   2:60.0,   3:50.0,   4:40.0,  
 const TIER_EGG_HATCH_TIME: Dictionary = {1:90.0,   2:75.0,   3:60.0,   4:45.0,   5:30.0}
 # Wave sizes are capped by the 100-unit global limit in Egg.gd
 const TIER_EGG_WAVE_SIZE : Dictionary = {1:5,      2:7,      3:10,     4:14,     5:18}
+# REAL FEATURE ADD (2026-07-21): "the higher the tier eggs the higher level
+# turrets it should have defending it as well as zombies" -- tier 1 nests
+# get no turrets at all (an easy first fight), scaling up to 3 max-tier
+# turrets guarding a tier-5 nest. Turret level uses FireTurret's own real
+# upgrade() scaling, not a separate stat table.
+const TIER_TURRET_COUNTS : Dictionary = {1:0,      2:1,      3:1,      4:2,      5:3}
+const TIER_TURRET_LEVEL  : Dictionary = {1:1,      2:2,      3:3,      4:4,      5:5}
 
 # Tier N spans from TIER_DEPTH[N-1] to TIER_DEPTH[N]
 const TIER_DEPTH : Array = [0.0, 0.30, 0.48, 0.62, 0.78, 1.0]
@@ -103,7 +120,7 @@ func _place_all_clusters() -> void:
 			if pos.distance_to(ep) < min_cluster_spacing:
 				too_close = true; break
 		if too_close: continue
-		if pos.distance_to(p1) < min_cluster_spacing: continue
+		if pos.distance_to(p1) < min_player_base_spacing: continue
 
 		placed.append(pos)
 		_spawn_cluster(pos, _depth_to_tier(t))
@@ -134,6 +151,8 @@ func _spawn_cluster(world_pos: Vector3, tier: int) -> void:
 	cluster.egg_hatch_time     = TIER_EGG_HATCH_TIME[tier]
 	cluster.egg_wave_size      = TIER_EGG_WAVE_SIZE[tier]
 	cluster.patrol_radius      = TIER_PATROL_RADII[tier]
+	cluster.turret_count       = TIER_TURRET_COUNTS[tier]
+	cluster.turret_level       = TIER_TURRET_LEVEL[tier]
 	cluster.attack_target      = _player_base
 	cluster.creep_pool         = TIER_CREEP_POOLS[tier].duplicate()
 	cluster.cluster_cleared.connect(_on_cluster_cleared)

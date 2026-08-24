@@ -175,7 +175,7 @@ func _ready() -> void:
 
 	_desc_lbl = Label.new()
 	_desc_lbl.text = "Use D-Pad / Left Stick to navigate.  Press A to confirm." \
-		if device_id >= 0 else "Select a class to see its lore and abilities."
+		if device_id >= 0 else "Tab / Arrow keys to browse   •   Enter to select   •   Enter again to confirm."
 	_desc_lbl.add_theme_font_size_override("font_size", info_fs)
 	_desc_lbl.add_theme_color_override("font_color", Color(0.8, 0.8, 0.85))
 	_desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -207,6 +207,11 @@ func _ready() -> void:
 	var bh := bs.duplicate() as StyleBoxFlat
 	bh.bg_color = Color(1.0, 0.9, 0.2)
 	_confirm_btn.add_theme_stylebox_override("hover", bh)
+	var bf := bs.duplicate() as StyleBoxFlat
+	bf.bg_color = Color(1.0, 0.9, 0.2)
+	bf.border_color = Color(1.0, 1.0, 1.0, 0.9)
+	bf.set_border_width_all(3)
+	_confirm_btn.add_theme_stylebox_override("focus", bf)
 	_confirm_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_confirm_btn.pressed.connect(_on_confirm)
 	if device_id >= 0:
@@ -316,6 +321,8 @@ func _on_card_selected(cd: Dictionary, _btn: Button) -> void:
 
 	if is_instance_valid(_confirm_btn):
 		_confirm_btn.disabled = false
+		if device_id < 0:
+			_confirm_btn.grab_focus()
 
 	if device_id >= 0:
 		_on_confirm()

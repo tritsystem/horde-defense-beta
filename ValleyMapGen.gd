@@ -160,44 +160,31 @@ func _sample_valley(wx: float, wz: float, noise_a: FastNoiseLite, noise_b: FastN
 
 func _clear_terrain(terrain: Node) -> void:
 	print("[ValleyTerrain3D] Clearing existing terrain data...")
-	var storage = null
-	if "storage" in terrain: storage = terrain.get("storage")
-	if not is_instance_valid(storage):
-		storage = terrain.find_child("Terrain3DStorage", true, false)
-	if not is_instance_valid(storage):
-		push_warning("[ValleyTerrain3D] No storage found to clear")
+	# REAL BUG FIX (2026-07-21): this used to search for a "storage" property
+	# and a "Terrain3DStorage" node -- neither exists in the actual Terrain3D
+	# version installed in this project (confirmed live via a headless API
+	# probe). The real API surface is terrain.data (a real Terrain3DData
+	# object) with get_region_locations()/remove_region() directly on it.
+	# The old code's push_error+return on failing to find "storage" meant
+	# this whole script silently never actually modified the terrain despite
+	# auto_generate_on_ready=true and running every single boot.
+	var data = terrain.get("data")
+	if not is_instance_valid(data):
+		push_warning("[ValleyTerrain3D] No terrain.data found to clear")
 		return
-
-	# Method 1: Terrain3D 0.9+ — remove all regions
-	if storage.has_method("get_region_locations"):
-		var locs : Array = storage.get_region_locations()
+	if data.has_method("get_region_locations") and data.has_method("remove_region"):
+		var locs : Array = data.get_region_locations()
 		for loc in locs:
-			if storage.has_method("remove_region"):
-				storage.remove_region(loc)
+			data.remove_region(loc)
 		print("[ValleyTerrain3D] Removed %d regions" % locs.size())
-		return
-
-	# Method 2: Older API — clear height maps directly
-	if "height_maps" in storage:
-		storage.set("height_maps", [])
-	if "control_maps" in storage:
-		storage.set("control_maps", [])
-	if "color_maps" in storage:
-		storage.set("color_maps", [])
-	if storage.has_method("update"):
-		storage.update()
-	print("[ValleyTerrain3D] Cleared via property reset")
+	else:
+		push_warning("[ValleyTerrain3D] terrain.data missing expected region methods")
 
 func _apply_heightmap(terrain: Node, heights: PackedFloat32Array) -> void:
 	_clear_terrain(terrain)
-	# Terrain3D uses a Storage node
-	var storage = null
-	if "storage" in terrain:
-		storage = terrain.get("storage")
-	if not is_instance_valid(storage):
-		storage = terrain.find_child("Terrain3DStorage", true, false)
-	if not is_instance_valid(storage):
-		push_error("[ValleyTerrain3D] Could not find Terrain3DStorage on Terrain3D node")
+	var data = terrain.get("data")
+	if not is_instance_valid(data):
+		push_error("[ValleyTerrain3D] Could not find terrain.data (Terrain3DData) on Terrain3D node")
 		return
 
 	# Build Image from float array
@@ -208,24 +195,15 @@ func _apply_heightmap(terrain: Node, heights: PackedFloat32Array) -> void:
 			# Terrain3D stores height normalized — check your version's expected range
 			img.set_pixel(col, row, Color(h / 512.0, 0, 0))  # normalize to 0-1 range
 
-	# Try Terrain3D 0.9+ API
-	if storage.has_method("set_height_range"):
-		storage.set_height_range(Vector2(floor_height - 5.0, ridge_height + noise_strength + 5.0))
+	if data.has_method("set_height_range"):
+		data.set_height_range(Vector2(floor_height - 5.0, ridge_height + noise_strength + 5.0))
 
-	# Import via heightmap
-	if terrain.has_method("import_images"):
-		var imgs := { "height": img }
-		terrain.import_images(imgs, Vector3.ZERO, 0.0, 512.0)
-		print("[ValleyTerrain3D] Imported via terrain.import_images()")
-	elif storage.has_method("import_images"):
-		storage.import_images({ "height": img }, Vector3.ZERO, 0.0, 512.0)
-		print("[ValleyTerrain3D] Imported via storage.import_images()")
+	if data.has_method("import_images"):
+		data.import_images({ "height": img }, Vector3.ZERO, 0.0, 512.0)
+		print("[ValleyTerrain3D] Imported via terrain.data.import_images()")
 	else:
-		# Fallback: set height map texture directly
-		var tex := ImageTexture.create_from_image(img)
-		if "height_maps" in storage:
-			storage.set("height_maps", [tex])
-		print("[ValleyTerrain3D] Set height texture directly")
+		push_error("[ValleyTerrain3D] terrain.data has no import_images() -- heightmap NOT applied")
+		return
 
 	# Force terrain to regenerate collision + mesh
 	if terrain.has_method("update"):
@@ -234,7 +212,6 @@ func _apply_heightmap(terrain: Node, heights: PackedFloat32Array) -> void:
 		terrain.build(terrain.get("clipmap_levels") if "clipmap_levels" in terrain else 7,
 					  terrain.get("mesh_vertex_spacing") if "mesh_vertex_spacing" in terrain else 1.0)
 
-	# Rebuild collision
 	if terrain.has_method("bake_collision"):
 		terrain.bake_collision()
 

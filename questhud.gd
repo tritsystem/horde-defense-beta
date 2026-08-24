@@ -1,7 +1,7 @@
 # ============================================================
 # QuestHUD.gd — Attach to a Control node in your HUD scene
-# Shows active quests top-right, completion flash center
-# Press J (TOGGLE_KEY) to show/hide the panel.
+# Shows active quests left side, vertically centered. Completion flash
+# center screen. Press J (TOGGLE_KEY) to show/hide the panel.
 # ============================================================
 extends Control
 
@@ -18,10 +18,16 @@ const TOGGLE_KEY := KEY_J
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	anchor_left = 0.72; anchor_right  = 1.0
-	anchor_top  = 0.02; anchor_bottom = 0.4
-	offset_left = 0.0;  offset_right  = -8.0
+	# Left side, mid-screen -- clear of canvas_layer.gd's _build_top_left()
+	# (player HP + base HP frame, fixed to the top ~88px of the same 0.0-0.22
+	# horizontal band). REAL BUG FIX (2026-07-25): a previous pass here added
+	# set_anchors_preset(...) + clip_contents on top of plain anchor/offset
+	# assignment -- that combination made the whole panel (and the J-key
+	# toggle, which just flips this same node's `visible`) disappear
+	# entirely. Plain anchor assignment only -- no preset call, no clipping.
+	anchor_left = 0.0;  anchor_right  = 0.22
+	anchor_top  = 0.40; anchor_bottom = 0.78
+	offset_left = 8.0;  offset_right  = 0.0
 	offset_top  = 0.0;  offset_bottom = 0.0
 	z_index = 100
 

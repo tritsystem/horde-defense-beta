@@ -115,7 +115,8 @@ func add_mouse_input(relative: Vector2) -> void:
 	if debug_mouse: _dbg_mouse_count += 1
 
 func _handle_mouse_look(delta: float) -> void:
-	smooth_mouse = smooth_mouse.lerp(mouse_input, mouse_smoothing * delta)
+	var safe_delta := minf(delta, 0.05)
+	smooth_mouse = smooth_mouse.lerp(mouse_input, 1.0 - exp(-mouse_smoothing * safe_delta))
 	var rel      := smooth_mouse
 	mouse_input   = Vector2.ZERO
 	if rel.length_squared() < 0.00001: return

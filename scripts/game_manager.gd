@@ -30,6 +30,7 @@ var players : Dictionary = {}
 # SIGNALS
 # ============================================================
 signal money_changed(team: int, amount: int)
+signal gold_awarded(team: int, amount: int)
 signal ready_updated(team: int, ready: bool)
 signal prep_time_updated(time_left: float)
 signal match_started_signal()
@@ -161,8 +162,10 @@ func _update_income(delta: float) -> void:
 # MONEY
 # ============================================================
 func _init_money() -> void:
+	var rsm := get_node_or_null("/root/RunSaveManager")
 	for team_id in team_money.keys():
-		team_money[team_id] = starting_money
+		var saved : int = rsm.get_team_gold(team_id) if is_instance_valid(rsm) else -1
+		team_money[team_id] = saved if saved >= 0 else starting_money
 		money_changed.emit(team_id, team_money[team_id])
 
 
@@ -174,12 +177,17 @@ func spend_gold(team_id: int, amount: int) -> bool:
 	if team_money.get(team_id, 0) < amount: return false
 	team_money[team_id] -= amount
 	money_changed.emit(team_id, team_money[team_id])
+	var rsm := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(rsm): rsm.set_team_gold(team_id, team_money[team_id])
 	return true
 
 
 func award_gold(team_id: int, amount: int) -> void:
 	team_money[team_id] = team_money.get(team_id, 0) + amount
 	money_changed.emit(team_id, team_money[team_id])
+	gold_awarded.emit(team_id, amount)
+	var rsm := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(rsm): rsm.set_team_gold(team_id, team_money[team_id])
 
 
 func add_gold(team_id: int, amount: int) -> void:

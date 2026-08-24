@@ -73,11 +73,21 @@ func bind_player(p: Node3D, player_idx: int, device_id: int) -> void:
 # READY
 # ============================================================
 func _ready() -> void:
-	add_to_group("turret_upgrade_panel")
-	visible = false
-	_build_layout()
-	# _build_crosshair() -- disabled: HUD canvas_layer owns crosshair
-	_ensure_input_actions()
+	# REAL BUG FIX (2026-07-25): "turret panel shows up in the top left" --
+	# this is a second, older, fully-independent turret panel (proximity
+	# scan, world-space reposition, T-key toggle) that duplicates
+	# canvas_layer.gd's newer _turret_hover system almost feature-for-feature.
+	# canvas_layer.gd tries to queue_free() this node at runtime
+	# (_build_turret_hover_panel(), "ui.tscn places an UpgradePanel at (0,0)
+	# -- remove it before building ours"), but that's a same-frame node-init
+	# race between two independent scripts and clearly isn't reliably
+	# winning -- the static (0,0)-(40,40) rect this node starts with in
+	# ui.tscn (before _build_layout() below ever repositions anything) is
+	# exactly the "top left" being reported. Retire this whole script at the
+	# source instead of racing removal logic: free immediately, before its
+	# own _process()/_input() can ever run. canvas_layer.gd's _turret_hover
+	# is the one real system now.
+	queue_free()
 
 
 # ============================================================

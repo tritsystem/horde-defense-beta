@@ -1,6 +1,0 @@
-[gd_scene format=3 uid="uid://dkoqh887ywi8j"]
-
-[ext_resource type="Script" uid="uid://doswo68a1n0iq" path="res://LaneSpawner.gd" id="1_jkmfn"]
-
-[node name="LaneSpawner" type="Node3D" unique_id=1792524030]
-script = ExtResource("1_jkmfn")

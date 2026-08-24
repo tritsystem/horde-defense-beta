@@ -471,8 +471,8 @@ blend_shape_mode = 0
 shadow_mesh = SubResource("ArrayMesh_xgp11")
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_61n0l"]
-radius = 1.1
-height = 4.25
+radius = 0.5
+height = 2.1
 
 [node name="shaman" type="CharacterBody3D" unique_id=592202823]
 transform = Transform3D(0.4, 0, 0, 0, 0.4, 0, 0, 0, 0.4, 0, 0, 0)

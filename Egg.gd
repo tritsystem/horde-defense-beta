@@ -58,7 +58,21 @@ var _hp_label    : Label3D         = null
 const HATCH_SCENE    : String = "res://zombie/zombie.tscn"
 const LOD_FULL       : float  = 60.0
 const LOD_HALF       : float  = 150.0
-const MAX_HIVE_UNITS : int    = 100
+# REAL BUG FIX (2026-08-06): "zombies pool up far away, lots of zombies
+# lags the game" -- every hive_unit spawned here calls ZombieHordeManager's
+# register_z1() directly (see _spawn_wave below), which forces full
+# CharacterBody3D physics+animation cost (Zone 1, the expensive tier --
+# see ZombieHordeManager.gd's ZONE1_MAX=60 comments) with NO camera-distance
+# check, unlike the rest of the game's spawn paths which use _place_unit()
+# to drop distant zombies into the cheap Zone 2 multimesh crowd instead.
+# Since eggs now hatch unconditionally regardless of proximity (the
+# 2026-07-25 fix below), a far-away tier-4/5 nest the player hasn't reached
+# yet could previously push up to 100 real, fully-animated zombies into
+# existence, eating most of the shared 60-slot Zone-1 budget on units
+# nobody is even near. Lowering this so hive units can't monopolize more
+# than half the real physics budget leaves real headroom for the Director's
+# own near-player spawns and caps how large the far-away pool can grow.
+const MAX_HIVE_UNITS : int    = 30
 
 const CREEP_PROFILES : Dictionary = {
 	"zombie":      {"hp": 1.0,  "spd": 1.0,  "dmg": 1.0},
@@ -82,6 +96,16 @@ func _ready() -> void:
 	set_process(false)
 	_schedule_poll()
 	_apply_egg_type_visual()
+	# REAL BUG FIX (2026-07-25): "only some eggs/nests spawn units, they all
+	# should" -- hatching used to wait for _lod_poll() to notice the player's
+	# camera within _activation_dist before ever starting the countdown. Any
+	# egg the player never physically walked near (distant tiers especially)
+	# never started its timer and never hatched at all. Start every egg's
+	# hatch countdown immediately and unconditionally -- proximity still
+	# gates _process/visual LOD below, just not whether it ever spawns.
+	_hatch_started  = true
+	_hatch_at_time  = Time.get_ticks_msec() / 1000.0 + hatch_time
+	get_tree().create_timer(hatch_time).timeout.connect(_do_hatch)
 
 
 func _schedule_poll() -> void:
@@ -104,11 +128,6 @@ func _lod_poll() -> void:
 	# HP bar visible only within LOD range
 	if is_instance_valid(_hp_bar_root):
 		_hp_bar_root.visible = (_lod_level < 2)
-	# Start hatch timer once when player enters activation range
-	if not _hatch_started and dist < _activation_dist:
-		_hatch_started  = true
-		_hatch_at_time  = Time.get_ticks_msec() / 1000.0 + hatch_time
-		get_tree().create_timer(hatch_time).timeout.connect(_do_hatch)
 	_schedule_poll()
 
 
@@ -156,6 +175,7 @@ func _build_hp_bar() -> void:
 	bg_mat.shading_mode         = BaseMaterial3D.SHADING_MODE_UNSHADED
 	bg_mat.no_depth_test        = true
 	bg_mi.material_override     = bg_mat
+	bg_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_hp_bar_root.add_child(bg_mi)
 
 	# Fill (coloured; scaled on x)
@@ -169,6 +189,7 @@ func _build_hp_bar() -> void:
 	_hp_fill_mat.shading_mode   = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_hp_fill_mat.no_depth_test  = true
 	_hp_fill_mi.material_override = _hp_fill_mat
+	_hp_fill_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_hp_bar_root.add_child(_hp_fill_mi)
 
 	# Numeric label
@@ -248,6 +269,17 @@ func take_damage(amount: float, _source = null) -> void:
 	if health <= 0.0:
 		_done = true
 		_reveal_on_map(35.0)
+		# REAL FEATURE ADD (2026-07-21): destroying an egg used to just remove
+		# it with no retaliation -- only the slow natural hatch timer
+		# (_do_hatch -> _spawn_wave) ever released units. "destroying eggs and
+		# nests should spawn mass amount of zombies" was a real, missing gap:
+		# a player killing the egg early got a strictly BETTER outcome (egg
+		# gone, nothing spawned) than letting it hatch normally. Retaliation
+		# wave is deliberately bigger than a normal hatch (3x wave_size,
+		# scaled further by tier) so destroying an egg is a real tradeoff,
+		# not a free kill.
+		var retaliation_count : int = wave_size * 3 + (tier - 1) * 2
+		_spawn_wave(retaliation_count)
 		egg_destroyed.emit(self)
 		queue_free()
 
@@ -270,7 +302,64 @@ func _do_hatch() -> void:
 	queue_free()
 
 
-func _spawn_wave() -> void:
+# REAL BUG FIX (2026-07-20): "they shouldn't spawn in castle or above" --
+# _spawn_wave() used to place new zombies at `global_position + spread` with
+# NO ground-height check at all (unlike LaneSpawner.gd's own spawn logic,
+# which does a real two-pass raycast). If an egg sits near a wall, ledge, or
+# any terrain irregularity, spawned zombies just appeared wherever that flat
+# math landed -- inside a wall, floating above a ledge, whatever. Reuses the
+# exact same convention already established in this project (LaneSpawner.gd's
+# `ground_layer=1`, basenode.gd's `TERRAIN_COLLISION_MASK=0b00000001`): a
+# dedicated terrain-only layer, so this correctly finds real ground instead
+# of a wall/prop top.
+const GROUND_LAYER : int = 1
+# REAL BUG FIX (2026-07-25): "eggs and nests spawning in air" -- this
+# comment's premise (layer 1 = dedicated terrain-only layer) doesn't hold:
+# basenode.gd's procedural castle walls/towers/ramparts never set an explicit
+# collision_layer, so they sit on Godot's default layer 1 too -- the exact
+# same real conflict already fixed for zombie ground-snap/LaneSpawner. A ray
+# masked to layer 1 can land on a wall/tower top instead of real terrain.
+# Exclude every base's built structure bodies (same pattern as
+# forestspawner.gd) so this actually finds real ground.
+func _get_structure_exclude_rids() -> Array[RID]:
+	var rids : Array[RID] = []
+	for b in get_tree().get_nodes_in_group("bases"):
+		if is_instance_valid(b):
+			_collect_body_rids_recursive(b, rids)
+	return rids
+
+
+func _collect_body_rids_recursive(node: Node, rids: Array[RID]) -> void:
+	if node is PhysicsBody3D:
+		rids.append((node as PhysicsBody3D).get_rid())
+	for c in node.get_children():
+		_collect_body_rids_recursive(c, rids)
+
+
+func _safe_spawn_position(pos: Vector3) -> Vector3:
+	if not is_inside_tree():
+		return pos
+	var space := get_tree().root.get_world_3d().direct_space_state
+	if not is_instance_valid(space):
+		return pos
+	var exclude_rids := _get_structure_exclude_rids()
+	var from := Vector3(pos.x, pos.y + 50.0, pos.z)
+	var to   := Vector3(pos.x, pos.y - 50.0, pos.z)
+	var ray := PhysicsRayQueryParameters3D.create(from, to)
+	ray.collision_mask = GROUND_LAYER
+	ray.exclude = exclude_rids
+	var hit := space.intersect_ray(ray)
+	if not hit.is_empty():
+		return Vector3(pos.x, (hit.position as Vector3).y + 0.3, pos.z)
+	# Fallback: any solid surface, but reject anything wildly higher than the
+	# egg's own height (almost certainly a wall/prop top, not real ground).
+	ray.collision_mask = 0xFFFFFFFF
+	hit = space.intersect_ray(ray)
+	if not hit.is_empty() and (hit.position as Vector3).y < pos.y + 6.0:
+		return Vector3(pos.x, (hit.position as Vector3).y + 0.3, pos.z)
+	return Vector3(pos.x, pos.y + 0.5, pos.z)   # last-resort flat fallback
+
+func _spawn_wave(count_override: int = -1) -> void:
 	if not ResourceLoader.exists(HATCH_SCENE): return
 	var packed : PackedScene = load(HATCH_SCENE) as PackedScene
 	if not is_instance_valid(packed): return
@@ -281,19 +370,35 @@ func _spawn_wave() -> void:
 		print("[Egg T%d] Unit cap reached — wave skipped" % tier)
 		return
 
-	var actual_wave : int   = mini(wave_size, can_spawn)
+	var requested   : int   = wave_size if count_override < 0 else count_override
+	var actual_wave : int   = mini(requested, can_spawn)
 	# Tier 1 = base stats (1.0×), scales to 1.8× at tier 5 — gradual progression
 	var tier_mult   : float = 1.0 + float(tier - 1) * 0.20
 
+	# REAL BUG FIX (2026-07-24, severe): this loop instantiated a full
+	# 55,686-vertex CharacterBody3D zombie per iteration with NO check
+	# against ZombieHordeManager's ZONE1_MAX cap -- a single egg's wave
+	# (up to 18 units, more for retaliation) could blow straight past the
+	# whole-game 40-zombie physics-tier limit that FPS depends on. Skip
+	# spawning further units once the cap is full rather than adding
+	# unmanaged, uncapped full-cost zombies.
+	var zhm := get_node_or_null("/root/ZombieHordeManager")
 	for _i in actual_wave:
+		if is_instance_valid(zhm) and zhm.has_method("can_register_z1") and not zhm.can_register_z1():
+			break
 		var id   : String     = creep_ids[randi() % creep_ids.size()]
 		var prof : Dictionary = CREEP_PROFILES.get(id, CREEP_PROFILES["zombie"])
 		var creep : Node = packed.instantiate()
 		if not is_instance_valid(creep): continue
 
 		if "team_id"    in creep: creep.set("team_id", 2)
-		if "enemy_base" in creep and is_instance_valid(attack_target):
+		# Set both bases before add_child so _find_bases() early-returns without clearing them.
+		# enemy_base = player's base (attack_target set by HiveNestManager).
+		# friendly_base = self (egg), so the guard check enemy_base != friendly_base passes.
+		if "enemy_base"    in creep and is_instance_valid(attack_target):
 			creep.set("enemy_base", attack_target)
+		if "friendly_base" in creep:
+			creep.set("friendly_base", self)
 
 		var base_hp  : float = float(creep.get("max_health")) if "max_health" in creep else 100.0
 		var base_spd : float = float(creep.get("move_speed")) if "move_speed"  in creep else 2.5
@@ -305,11 +410,32 @@ func _spawn_wave() -> void:
 		if "damage"     in creep: creep.set("damage",     base_dmg * prof["dmg"] * tier_mult)
 
 		creep.add_to_group("hive_unit")
-		get_tree().current_scene.add_child(creep)
-		if creep is Node3D:
-			var spread : Vector3 = Vector3(randf_range(-2.5, 2.5), 0.2, randf_range(-2.5, 2.5))
-			(creep as Node3D).global_position = global_position + spread
+		# ATTACK mode: hive units hunt nearest player then enemy base
+		if "ai_mode" in creep: creep.set("ai_mode", 1)   # AIMode.ATTACK = 1
 
+		get_tree().current_scene.add_child(creep)
+
+		if creep is Node3D:
+			var spread : Vector3 = Vector3(randf_range(-2.5, 2.5), 0.0, randf_range(-2.5, 2.5))
+			(creep as Node3D).global_position = _safe_spawn_position(global_position + spread)
+
+		# Ensure physics and process are active — _deferred_init runs one frame later
+		# but ZHM or other systems should not be able to disable fresh instances.
+		creep.process_mode = Node.PROCESS_MODE_INHERIT
+		creep.set_physics_process(true)
+		creep.set_process(true)
+
+		# Re-apply after add_child in case _ready/_find_bases ran synchronously
+		if "enemy_base"    in creep and is_instance_valid(attack_target):
+			creep.set("enemy_base", attack_target)
+		if "friendly_base" in creep:
+			creep.set("friendly_base", self)
+
+		# Register with ZHM so this hive unit gets LOD management,
+		# neighbor push, and player push — same as wave zombies.
+		# (zhm already fetched once above this loop.)
+		if is_instance_valid(zhm) and creep is CharacterBody3D:
+			zhm.register_z1(creep as CharacterBody3D)
 	print("[Egg T%d] Hatched — %d units (cap: %d/%d)" % [tier, actual_wave, current_count + actual_wave, MAX_HIVE_UNITS])
 
 

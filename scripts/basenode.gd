@@ -68,7 +68,14 @@ func _ready() -> void:
 	_build_damage_zone()
 	call_deferred("_notify_worldgen_exclusion")
 	call_deferred("_spawn_castle")
-	call_deferred("_spawn_starting_turrets")
+	# REMOVED (2026-07-25): "get rid of auto spawning fire turrets at player
+	# base that don't do anything" -- these 3 auto-placed starter turrets per
+	# base sat outside the player's actual turret economy entirely (bought
+	# and upgraded through shopui.gd/_place_turret() instead) -- not
+	# purchased, not tracked by the shop's upgrade/repair flow, just
+	# unmanaged clutter the player never chose to place. Turrets now only
+	# come from the shop.
+	# call_deferred("_spawn_starting_turrets")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -109,6 +116,16 @@ func _make_mat(col: Color) -> StandardMaterial3D:
 func _spawn_castle() -> void:
 	var root      := Node3D.new()
 	root.name      = "Castle"
+	# REAL BUG FIX (2026-07-21): this root (and every wall/tower/rampart
+	# StaticBody3D built under it) is parented to current_scene, NOT to this
+	# Base node -- so it was never reachable via zombie.gd's "bases"-group
+	# descendant scan, which only walks descendants of group-tagged nodes.
+	# The castle's own real collision was invisible to that exclusion logic
+	# entirely, regardless of how the scan itself worked -- confirmed live:
+	# zombies teleporting onto castle rampart-walk tops via the ground-snap
+	# raycast finding them as "ground". Tag it into the same "bases" group
+	# so it's found the same way the Base node itself is.
+	root.add_to_group("bases")
 	get_tree().current_scene.add_child(root)
 
 	# Snap castle root to terrain as well.

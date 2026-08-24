@@ -47,6 +47,17 @@ class_name WorldGenerator
 @export var base_clear_radius  : float = 90.0
 @export var spawn_clear_radius : float = 45.0
 @export var lane_clear_width   : float = 18.0
+## REAL BUG FIX (2026-07-21): the castle is an irregular procedurally-built
+## structure (basenode.gd's _spawn_castle()) with 4 real gate openings
+## (marked by "castle_gate"-group Area3D nodes at the actual cardinal wall
+## openings, see _mark_castle_gates()) -- a single circular base_clear_radius
+## around the base's CENTER doesn't reliably keep those specific openings
+## clear, since the castle's real footprint isn't a circle. Confirmed live:
+## "trees don't spawn and block entrances of castle". Fixed by explicitly
+## excluding a real radius around every actual gate marker, for ALL
+## vegetation types (trees/grass/rocks/bushes), not just relying on the
+## coarse base radius.
+@export var gate_clear_radius  : float = 12.0
 
 
 # ============================================================
@@ -142,6 +153,7 @@ class_name WorldGenerator
 # ============================================================
 var _noise : FastNoiseLite
 var _space : PhysicsDirectSpaceState3D
+var _structure_exclude : Array[RID] = []
 
 const RAY_FROM_Y : float =  500.0
 const RAY_TO_Y   : float = -300.0
@@ -155,6 +167,27 @@ func _ready() -> void:
 	randomize()
 	_setup_noise()
 
+	# Wait for bases to be placed in the scene before generating,
+	# so _is_blocked_position correctly excludes base areas.
+	# Retry for up to 5 seconds (50 × 0.1s).
+	var waited := 0
+	while get_tree().get_nodes_in_group("bases").is_empty() and waited < 50:
+		await get_tree().create_timer(0.1).timeout
+		waited += 1
+
+	# REAL BUG FIX (2026-07-21): also wait for the terrain generator's real
+	# ground collision to exist -- terrainscript.gd's generate() runs via
+	# its own deferred call, same as this wait-for-bases loop, so without
+	# this every ground raycast below could silently miss before the
+	# terrain finishes building, quietly under-spawning the whole forest.
+	waited = 0
+	while get_tree().get_nodes_in_group("terrain_ready").is_empty() and waited < 50:
+		await get_tree().create_timer(0.1).timeout
+		waited += 1
+	if get_tree().get_nodes_in_group("terrain_ready").is_empty():
+		push_warning("[WorldGen] Terrain not ready after 5s — ground raycasts may miss")
+
+	# Extra physics frames so base collision shapes are active
 	for _i : int in range(6):
 		await get_tree().physics_frame
 
@@ -162,6 +195,17 @@ func _ready() -> void:
 	if _space == null:
 		push_error("[WorldGen] Missing physics space")
 		return
+
+	# REAL BUG FIX (2026-07-25): "trees spawning in air" -- ground_mask is a
+	# single collision layer (1), and basenode.gd's procedural castle walls/
+	# towers/ramparts default to that SAME layer (this exact "layer 1 shared
+	# between ground and structures" issue already bit zombie ground-snap and
+	# LaneSpawner elsewhere in this project). A ground raycast landing on top
+	# of a wall, tower, or rampart instead of the real terrain below it
+	# places a tree at that structure's height -- floating relative to the
+	# actual ground everywhere nearby. Exclude every base's built structure
+	# bodies from the ground ray, same pattern used for zombies.
+	_structure_exclude = _collect_structure_exclude_rids()
 
 	print("[WorldGen] Generating world...")
 
@@ -422,6 +466,9 @@ func _spawn_objects(
 func _is_blocked_position(x : float, z : float) -> bool:
 	var p : Vector2 = Vector2(x, z)
 
+	if _is_near_castle_gate(x, z):
+		return true
+
 	for b : Node in get_tree().get_nodes_in_group("bases"):
 		if not is_instance_valid(b) or not (b is Node3D):
 			continue
@@ -468,6 +515,25 @@ func _is_in_base_clear(x : float, z : float) -> bool:
 			(b as Node3D).global_position.x,
 			(b as Node3D).global_position.z)
 		if p.distance_to(bp) < base_clear_radius:
+			return true
+	return _is_near_castle_gate(x, z)
+
+
+## True when the position is within gate_clear_radius of any REAL castle
+## gate marker (see basenode.gd's _mark_castle_gates() -- 4 Area3D nodes in
+## the "castle_gate" group at the actual cardinal wall openings). Checked
+## separately from the coarse circular base_clear_radius because the
+## castle's real footprint isn't a circle -- a position can pass the
+## circular check while still overlapping an actual gate opening.
+func _is_near_castle_gate(x : float, z : float) -> bool:
+	var p : Vector2 = Vector2(x, z)
+	for g : Node in get_tree().get_nodes_in_group("castle_gate"):
+		if not is_instance_valid(g) or not (g is Node3D):
+			continue
+		var gp : Vector2 = Vector2(
+			(g as Node3D).global_position.x,
+			(g as Node3D).global_position.z)
+		if p.distance_to(gp) < gate_clear_radius:
 			return true
 	return false
 
@@ -531,6 +597,7 @@ func _get_ground_y(x : float, z : float) -> float:
 	var to    : Vector3 = Vector3(x, RAY_TO_Y,   z)
 	var query : PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(from, to)
 	query.collision_mask = ground_mask
+	query.exclude = _structure_exclude
 	var hit : Dictionary = _space.intersect_ray(query)
 	if hit.is_empty():
 		return NO_HIT
@@ -538,6 +605,24 @@ func _get_ground_y(x : float, z : float) -> float:
 	if normal.y < 0.2:
 		return NO_HIT
 	return (hit["position"] as Vector3).y
+
+
+## Collect every PhysicsBody3D RID under each base (including basenode.gd's
+## procedurally-built "Castle" root, which is tagged into the same "bases"
+## group) so ground raycasts can exclude them and find real terrain instead.
+func _collect_structure_exclude_rids() -> Array[RID]:
+	var rids : Array[RID] = []
+	for b in get_tree().get_nodes_in_group("bases"):
+		if is_instance_valid(b):
+			_collect_body_rids_recursive(b, rids)
+	return rids
+
+
+func _collect_body_rids_recursive(node: Node, rids: Array[RID]) -> void:
+	if node is PhysicsBody3D:
+		rids.append((node as PhysicsBody3D).get_rid())
+	for c in node.get_children():
+		_collect_body_rids_recursive(c, rids)
 
 
 # ============================================================

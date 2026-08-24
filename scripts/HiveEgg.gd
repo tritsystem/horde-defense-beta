@@ -1,4 +1,10 @@
 # ============================================================
+# ⚠ NOT LIVE — NOT ATTACHED TO ANY SCENE (2026-07-25) ⚠
+# Superseded by Egg.gd (repo root), which is what HiveCluster.gd actually
+# instantiates (Egg.new()) in the live game. This file is only ever load()'d
+# from the also-dead scripts/HiveNode.gd. Editing this file has no effect
+# on gameplay — edit Egg.gd instead.
+# ============================================================
 # HiveEgg.gd
 # ============================================================
 # Attach to any Node3D inside a HiveNode to create a breakable

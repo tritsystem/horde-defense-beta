@@ -18,6 +18,10 @@ var _shield_timer   : float = 0.0
 var _shield_current : float = 0.0
 var _counter_ready  : bool  = false
 var _counter_timer  : float = 0.0
+var _stagger_timer  : float = 0.0
+
+const STAGGER_THRESHOLD : float = 0.10   # fraction of max_health that triggers stagger
+const STAGGER_DURATION  : float = 0.08   # seconds of interrupt pause
 
 func _ready() -> void:
 	max_health      = 1500.0
@@ -34,8 +38,17 @@ func _ready() -> void:
 	_shield_timer = shield_cooldown
 
 func _physics_process(delta: float) -> void:
-	super._physics_process(delta)
-	if is_dead: return
+	_stagger_timer = maxf(0.0, _stagger_timer - delta)
+	if _stagger_timer > 0.0:
+		# Interrupt pause: gravity only, bleed off horizontal velocity, no AI tick
+		if not is_on_floor(): velocity.y -= gravity * delta
+		elif velocity.y < 0.0: velocity.y = 0.0
+		velocity.x = lerpf(velocity.x, 0.0, 10.0 * delta)
+		velocity.z = lerpf(velocity.z, 0.0, 10.0 * delta)
+		move_and_slide()
+	else:
+		super._physics_process(delta)
+	if _is_dead: return
 	_shield_timer -= delta
 	if _counter_ready:
 		_counter_timer -= delta
@@ -52,6 +65,12 @@ func take_damage(amount: float, source) -> void:
 		amount          -= absorbed
 	if amount <= 0.0: return
 	super.take_damage(amount, source)
+	# Big-hit stagger — interrupt movement for STAGGER_DURATION
+	if amount > max_health * STAGGER_THRESHOLD:
+		_stagger_timer = STAGGER_DURATION
+		if is_instance_valid(_anim_tree):
+			for hp: String in ["parameters/hurt_shot/request", "parameters/hit/request"]:
+				_anim_tree.set(hp, AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
 	# Trigger counter window
 	_counter_ready = true
 	_counter_timer = counter_window

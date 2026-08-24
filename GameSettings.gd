@@ -31,6 +31,10 @@ var sfx_volume    : float = 1.0
 # ── DISPLAY ──────────────────────────────────────────────────
 var fullscreen : bool = false
 
+# ── RUN STATE ────────────────────────────────────────────────
+# pid → Array of creep ids; survives scene reloads within a session
+var player_decks : Dictionary = {}
+
 # ─────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────
@@ -55,6 +59,7 @@ func reset() -> void:
 	ai_team_id       = 2
 	ai_difficulty    = 2
 	game_mode        = "original"
+	player_decks     = {}
 
 func difficulty_label() -> String:
 	return ["", "EASY", "MEDIUM", "HARD", "NIGHTMARE"][clampi(ai_difficulty, 1, 4)]

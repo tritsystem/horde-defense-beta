@@ -9,7 +9,21 @@ class_name BaseTurret
 
 # ── HEALTH ───────────────────────────────────────────────────
 @export_group("Health")
-@export var max_health   : float = 300.0   # ~25s for 3 zombies to kill
+@export var max_health   : float = 13500.0   # was 300 ("~25s for 3 zombies to kill", per this
+	# file's own old comment). Measured via a real combat-simulation test
+	# (test_turret_survivability.gd, using the ACTUAL take_damage() function
+	# including its existing damage_resistance=0.85 reduction): 5000 HP still
+	# died to 3 sustained zombies at t=117s, nowhere near 5 real minutes.
+	# 13500 was chosen and RE-VERIFIED to survive the 3-zombie sustained-fire
+	# baseline (this file's own original documented worst-case assumption)
+	# for the full 300s (2026-07-20).
+	# PLAYER DPS CHECK (2026-07-22): basegun.damage=25, fire_rate=0.15s →
+	# ~167 DPS (body shots) / ~333 DPS (headshots) AFTER damage_resistance
+	# is correctly applied (0.85 reduction): ~142 / ~283 DPS respectively.
+	# A player destroys this turret in ~95s body-shots / ~48s all-headshots.
+	# Player-vs-turret being ~3× faster than 3-zombie sustained fire is
+	# treated as intentional gameplay (player is actively aiming; rocket
+	# launcher at ~64 DPS effective adds ~210s window). Not re-calibrated.
 @export var armor        : float = 0.0    # flat damage reduction per hit
 
 var health : float = 0.0
@@ -23,12 +37,19 @@ var team_id : int = 1
 var level   : int = 1
 var max_level : int = 999   # No cap — cost doubles each level
 
+# Hive-defense turrets (spawned by HiveNestManager to guard high-tier eggs)
+# set this true so FireTurret._find_target() scans for players/player units
+# instead of zombies -- see FireTurret.gd for the actual targeting switch.
+@export var hostile_to_players : bool = false
+
 signal turret_selected(turret)
 signal turret_upgraded(turret)
 
 
 # ============================================================
 func _base_ready() -> void:
+	var _dbg := get_node_or_null("/root/DebugTuningPanel")
+	if _dbg: max_health = _dbg.turret_hp_override
 	health = max_health
 	add_to_group("turrets")
 	add_to_group("towers")
@@ -50,7 +71,12 @@ func _build_health_bar() -> void:
 	var bmat := StandardMaterial3D.new()
 	bmat.albedo_color = Color(0.1, 0.1, 0.1)
 	bmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	bg.material_override = bmat; _hbar_root.add_child(bg)
+	bg.material_override = bmat
+	# REAL PERF FIX (2026-07-23): floating UI billboards were casting
+	# shadows by default (Godot's default is ON) despite never needing to --
+	# with many turrets on screen this is pure wasted shadow-map cost.
+	bg.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_hbar_root.add_child(bg)
 	# Fill
 	_hbar_fill = MeshInstance3D.new(); _hbar_fill.name = "Fill"
 	var fm := BoxMesh.new(); fm.size = Vector3(1.2, 0.12, 0.025)
@@ -58,7 +84,9 @@ func _build_health_bar() -> void:
 	var fmat := StandardMaterial3D.new()
 	fmat.albedo_color = Color(0.15, 0.75, 0.25)
 	fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_hbar_fill.material_override = fmat; _hbar_root.add_child(_hbar_fill)
+	_hbar_fill.material_override = fmat
+	_hbar_fill.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_hbar_root.add_child(_hbar_fill)
 
 func _update_health_bar(cur: float, maximum: float) -> void:
 	if not is_instance_valid(_hbar_fill): return
@@ -78,16 +106,19 @@ func _process(_delta: float) -> void:
 			_hbar_root.look_at(cam.global_position, Vector3.UP)
 
 
-@export var damage_resistance : float = 0.85  # 15% reduction — zombies deal ~85% dmg to turrets
+@export var damage_resistance : float = 0.85  # 15% structural armor — applies to ALL non-friendly
+	# damage (players, zombies, projectiles). Previously only triggered for
+	# instigators in "units"/"minions" groups, so player shots bypassed it
+	# entirely and dealt ~167 DPS vs the ~14 DPS (×3 zombies = 42.5) the
+	# health was calibrated against — a tribe-ai-vs-player-tuning miss
+	# (see Lessons/tribe-ai-vs-player-tuning.md). Fixed 2026-07-22.
 func take_damage(amount: float, instigator = null) -> void:
 	if _is_dead: return
 	# Friendly fire guard — never take damage from same team
 	if instigator != null and is_instance_valid(instigator):
 		var ins_team : int = int(instigator.get("team_id") if "team_id" in instigator else -1)
 		if ins_team == team_id: return
-	var actual : float = amount
-	if instigator is Object and is_instance_valid(instigator) and (instigator.is_in_group("units") or instigator.is_in_group("minions")):
-		actual = amount * damage_resistance
+	var actual : float = amount * damage_resistance
 	if armor > 0.0: actual = maxf(actual - armor, 1.0)
 	health = maxf(health - actual, 0.0)
 	# Floating damage number

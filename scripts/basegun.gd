@@ -13,6 +13,8 @@ class_name BaseGun
 @export var damage      : float = 25.0
 @export var recoil      : float = 2.0
 @export var projectile_scene : PackedScene = null
+@export var is_melee        : bool         = false
+@export var pool_size       : int          = 20
 
 @export_group("Viewmodel")
 @export var vm_position : Vector3 = Vector3(0.3, -0.25, -0.5)
@@ -34,10 +36,12 @@ class_name BaseGun
 
 var current_ammo : int                 = 0
 var reloading    : bool                = false
-var cooldown     : bool                = false
+var cooldown         : bool                = false
+var _hitstop_active  : bool                = false
 var camera       : Camera3D            = null
 var player       : CharacterBody3D     = null
 var audio_player : AudioStreamPlayer3D = null
+var _pool        : Array[Node]         = []
 
 signal ammo_changed(current: int, max: int)
 
@@ -49,6 +53,13 @@ func _ready() -> void:
 	audio_player = AudioStreamPlayer3D.new()
 	add_child(audio_player)
 	audio_player.bus = &"Gunshots"
+	_fill_pool()
+
+
+func _exit_tree() -> void:
+	for node in _pool:
+		if is_instance_valid(node): node.free()
+	_pool.clear()
 
 
 # WeaponManager calls this after _force_show(). Do NOT touch visible.
@@ -103,9 +114,11 @@ func _fire() -> void:
 
 	var is_topdown : bool = is_instance_valid(player) and player.get("topdown_mode") == true
 	if is_topdown and is_instance_valid(projectile_scene):
-		var proj : Node = projectile_scene.instantiate()
+		var proj : Node = _borrow_projectile()
+		if proj == null: return
 		get_tree().current_scene.add_child(proj)
 		if proj.has_method("init"): proj.init(from, dir, player, damage)
+		proj.tree_exiting.connect(_replenish_pool, CONNECT_ONE_SHOT)
 		if is_instance_valid(player) and player.has_method("apply_recoil"):
 			player.apply_recoil(recoil * 0.01)
 		return
@@ -114,6 +127,7 @@ func _fire() -> void:
 	var space := camera.get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(from, to)
 	query.collision_mask = 0xFFFFFFFF
+	query.collide_with_areas = true   # limb hitboxes are Area3D (see zombie.gd)
 	if is_instance_valid(player):
 		var rids : Array[RID] = []
 		var pnode : Node = player
@@ -126,6 +140,18 @@ func _fire() -> void:
 
 	var hit := space.intersect_ray(query)
 	if hit.is_empty(): return
+
+	# REAL FEATURE (2026-07-24): precise per-limb dismemberment. The hitbox
+	# is a real StaticBody3D tracking the animated bone via BoneAttachment3D
+	# (see zombie.gd's _build_limb_hitboxes/detach_limb) -- if the raycast
+	# actually hit one of these (not just the zombie's main capsule), tell
+	# the real owning zombie which limb to detach.
+	var hit_limb_id : String = ""
+	if hit.collider is Object and (hit.collider as Object).has_meta("limb_id"):
+		hit_limb_id = str((hit.collider as Object).get_meta("limb_id"))
+		var limb_zombie : Object = (hit.collider as Object).get_meta("zombie_ref")
+		if is_instance_valid(limb_zombie) and limb_zombie.has_method("detach_limb"):
+			limb_zombie.call("detach_limb", hit_limb_id, dir)
 
 	if multiplayer.is_server() or not multiplayer.has_multiplayer_peer():
 		var target := _resolve_damageable(hit.collider)
@@ -146,18 +172,37 @@ func _fire() -> void:
 				dmg *= player.get_damage_multiplier()
 			if "team_id" in target and is_instance_valid(player):
 				if int(target.get("team_id")) == int(player.get("team_id")): return
-			var is_headshot : bool = false
+			var is_headshot : bool = hit_limb_id == "head"
 			if target is Node3D:
 				var target_top : float = (target as Node3D).global_position.y + 1.6
 				if hit.position.y >= target_top - 0.35:
-					dmg *= 2.0; is_headshot = true
+					is_headshot = true
+			if is_headshot: dmg *= 2.0
 			target.take_damage(dmg, player)
+			if is_melee: _trigger_hitstop()
 			_show_hitmarker(is_headshot)
 			if is_headshot and is_instance_valid(player) and player.has_method("record_quest_event"):
 				player.record_quest_event("headshots", 1)
 
 	if is_instance_valid(player) and player.has_method("apply_recoil"):
 		player.apply_recoil(recoil * 0.01)
+
+
+func _fill_pool() -> void:
+	if projectile_scene == null or pool_size <= 0: return
+	while _pool.size() < pool_size:
+		_pool.append(projectile_scene.instantiate())
+
+func _borrow_projectile() -> Node:
+	if not _pool.is_empty():
+		var node : Node = _pool.pop_back()
+		return node
+	if projectile_scene == null: return null
+	return projectile_scene.instantiate()  # overflow: pool exhausted
+
+func _replenish_pool() -> void:
+	if projectile_scene == null or _pool.size() >= pool_size: return
+	_pool.append(projectile_scene.instantiate())
 
 
 func reload() -> void:
@@ -179,6 +224,9 @@ func _play_sound(sound: AudioStream, volume_db: float, pitch_scale: float,
 	audio_player.stream = sound; audio_player.play()
 
 func _play_shoot_sound()  -> void:
+	var am := get_node_or_null("/root/AudioManager")
+	if is_instance_valid(am) and not am.claim_voice("gunshot", audio_player):
+		return
 	_play_sound(shoot_sound,  shoot_volume_db,  shoot_pitch_scale,  shoot_pitch_randomness,  shoot_volume_randomness)
 func _play_reload_sound() -> void:
 	_play_sound(reload_sound, reload_volume_db, reload_pitch_scale, reload_pitch_randomness, reload_volume_randomness)
@@ -205,3 +253,15 @@ func apply_player_upgrade(stat: String, amount: float) -> void:
 		"damage":       damage      += amount
 		"fire_rate":    fire_rate    = maxf(fire_rate   - amount, 0.05)
 		"reload_speed": reload_time  = maxf(reload_time - amount, 0.3)
+
+
+# Freeze exactly 2 frames (0.033 s) on melee contact; restores whatever
+# time_scale was active so wave-clear slow-mo survives the freeze.
+func _trigger_hitstop() -> void:
+	if _hitstop_active: return
+	_hitstop_active = true
+	var prev_scale : float = Engine.time_scale
+	Engine.time_scale = 0.0
+	get_tree().create_timer(0.033, true, false, true).timeout.connect(
+		func(): Engine.time_scale = prev_scale; _hitstop_active = false,
+		CONNECT_ONE_SHOT)

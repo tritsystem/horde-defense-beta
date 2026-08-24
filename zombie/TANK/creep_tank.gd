@@ -1,4 +1,12 @@
 ## ═══════════════════════════════════════════════════════════
+## ⚠ NOT LIVE — NOT ATTACHED TO ANY SCENE (2026-07-25) ⚠
+## Extends a third, abandoned "DefenseCreep extends Zombie" hierarchy that
+## no longer exists/is used. The actually-reachable tank creep is
+## scripts/tank.gd, which extends the live
+## assets/weapons/resources/Player/zombie.gd directly (and is referenced
+## by main.tscn's defend_creep_scenes). Editing this file has no effect
+## on gameplay — edit scripts/tank.gd instead.
+## ═══════════════════════════════════════════════════════════
 ##  CREEP TYPES — Special abilities for the Horde
 ##  All extend DefenseCreep (which extends Zombie)
 ##  Each has a unique passive + active/triggered ability

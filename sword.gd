@@ -19,7 +19,14 @@ extends Node3D
 @export var custom_skin : PackedScene = null
 
 @export_group("Viewmodel")
-@export var vm_position : Vector3 = Vector3(0.3, -0.3, -0.5)
+# REAL BUG FIX (2026-07-25): "reconfigure weapons to be positioned all
+# correctly and identically" -- every other weapon (gun.gd, rocketgun.gd,
+# projectilegun.gd, grapplergun.gd, flamethrower.gd) has no vm_position of
+# its own, so WeaponsManager.gd falls back to its shared default
+# Vector3(0.3, -0.25, -0.5). This was the one weapon with its own,
+# slightly different default (-0.3 instead of -0.25 on Y), rendering the
+# sword visibly lower on screen than every gun. Match the shared default.
+@export var vm_position : Vector3 = Vector3(0.3, -0.25, -0.5)
 @export var vm_rotation : Vector3 = Vector3(0.0, 180.0, 0.0)
 
 # ── enchantment ──────────────────────────────────────────────
@@ -48,6 +55,7 @@ var player : CharacterBody3D = null
 # ── state ────────────────────────────────────────────────────
 var _cooldown : bool = false
 var _sfx      : AudioStreamPlayer3D = null
+var _blade_glow_tweens : Array[Tween] = []
 
 # Satisfies any WeaponManager ammo-signal listener
 signal ammo_changed(cur: int, max: int)
@@ -165,6 +173,16 @@ func _apply_hits() -> void:
 				Engine.time_scale = 0.05
 				get_tree().create_timer(0.04, true, false, true).timeout.connect(
 					func(): Engine.time_scale = 1.0, CONNECT_ONE_SHOT)
+				# REAL FEATURE (2026-07-24): "sword slice" dismemberment.
+				# Melee hits here are proximity-based (no raycast/arc data),
+				# so there's no real "which limb" signal like the gun's
+				# precise hitbox system has -- a killing sword blow
+				# decapitates instead, a real flourish using the same
+				# detach_limb()/partial-ragdoll mechanism, not a fake effect.
+				if node.has_method("detach_limb"):
+					var slice_dir : Vector3 = (node as Node3D).global_position - origin
+					slice_dir.y = 0.0
+					node.call("detach_limb", "head", slice_dir)
 
 			_play_sfx(hit_sounds)
 			hit_any = true
@@ -227,16 +245,27 @@ func _chain_lightning(origin_target: Node, dmg: float) -> void:
 		return
 	var origin_pos : Vector3 = (origin_target as Node3D).global_position
 	var my_team    : int     = int(player.get("team_id") if "team_id" in player else 1)
-	for node in get_tree().get_nodes_in_group("minions"):
-		if node == origin_target or not is_instance_valid(node):
-			continue
-		if "team_id" in node and int(node.get("team_id")) == my_team:
-			continue
-		if (node as Node3D).global_position.distance_to(origin_pos) > 4.0:
-			continue
-		if node.has_method("take_damage"):
-			node.take_damage(dmg, player)
-		_flash_enchant(node, Color(1.0, 0.95, 0.1))
+	# REAL BUG FIX: this only ever searched the "minions" group, but real
+	# zombies are tagged "zombies"/"units" (see zombie.gd's _ready()) --
+	# "minions" isn't a group anything in this project actually joins, so
+	# Electric enchant's chain lightning could never hit a real zombie, the
+	# entire enemy type in this game. Search the same groups _apply_hits()
+	# already uses for the initial swing hit.
+	var seen : Dictionary = {}
+	for group in ["zombies", "units", "players", "minions"]:
+		for node in get_tree().get_nodes_in_group(group):
+			if node == origin_target or not is_instance_valid(node) or seen.has(node):
+				continue
+			seen[node] = true
+			if not (node is Node3D):
+				continue
+			if "team_id" in node and int(node.get("team_id")) == my_team:
+				continue
+			if (node as Node3D).global_position.distance_to(origin_pos) > 4.0:
+				continue
+			if node.has_method("take_damage"):
+				node.take_damage(dmg, player)
+			_flash_enchant(node, Color(1.0, 0.95, 0.1))
 
 
 func _flash_enchant(target: Node, col: Color) -> void:
@@ -259,6 +288,13 @@ func _flash_enchant(target: Node, col: Color) -> void:
 func set_enchantment(e: int) -> void:
 	enchantment = e
 	if e == Enchant.NONE:
+		# Stop any running glow tweens first -- otherwise a tween can still
+		# try to animate material_override:emission_energy_multiplier right
+		# after material_override was just set to null here.
+		for old_tw in _blade_glow_tweens:
+			if is_instance_valid(old_tw):
+				old_tw.kill()
+		_blade_glow_tweens.clear()
 		for mesh in find_children("*", "MeshInstance3D", true, false):
 			(mesh as MeshInstance3D).material_override = null
 	else:
@@ -271,6 +307,17 @@ func get_enchantment_name() -> String:
 
 func _update_blade_color() -> void:
 	var col : Color = ENCHANT_COLORS.get(enchantment, swing_color) as Color
+	# REAL BUG FIX: this used to create a brand-new infinite-looping tween
+	# PER MESH, EVERY call, with no reference kept and nothing ever killed --
+	# and _do_swing_vfx() calls this again after every single swing while
+	# enchanted, so every swing piled another full set of infinite tweens
+	# onto the same properties, fighting each other and leaking forever for
+	# as long as combat continued. Kill every previous glow tween up front
+	# (one per mesh child, since the loop below creates one per mesh too).
+	for old_tw in _blade_glow_tweens:
+		if is_instance_valid(old_tw):
+			old_tw.kill()
+	_blade_glow_tweens.clear()
 	for mesh in find_children("*", "MeshInstance3D", true, false):
 		var mi  := mesh as MeshInstance3D
 		var src : Material = mi.material_override
@@ -291,6 +338,7 @@ func _update_blade_color() -> void:
 		var tw := create_tween().set_loops()
 		tw.tween_property(mi, "material_override:emission_energy_multiplier", 6.0, 0.6)
 		tw.tween_property(mi, "material_override:emission_energy_multiplier", 2.5, 0.6)
+		_blade_glow_tweens.append(tw)
 
 
 # ============================================================
@@ -322,8 +370,14 @@ func _do_swing_vfx() -> void:
 	tw2.tween_property(self, "rotation_degrees:z",  55.0, 0.12)
 	tw2.tween_property(self, "rotation_degrees:z",   0.0, 0.08)
 
-	get_tree().create_timer(0.12).timeout.connect(
-		func(): _update_blade_color(), CONNECT_ONE_SHOT)
+	get_tree().create_timer(0.12).timeout.connect(func():
+		if enchantment == Enchant.NONE:
+			# Restore original material so texture shows again
+			for m in find_children("*", "MeshInstance3D", true, false):
+				(m as MeshInstance3D).material_override = null
+		else:
+			_update_blade_color()
+	, CONNECT_ONE_SHOT)
 
 
 # ============================================================

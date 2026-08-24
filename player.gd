@@ -21,7 +21,7 @@ var device_id : int = -1
 
 @export_group("Mouse")
 @export var mouse_sensitivity : float = 0.15
-@export var mouse_smoothing   : float = 18.0
+@export var mouse_smoothing   : float = 10.0
 @export var _invert_movement  : bool  = false
 @export var max_look_up       : float = 89.0
 @export var max_look_down     : float = -89.0
@@ -58,7 +58,9 @@ var device_id : int = -1
 @export var magnetism_radius    : float = 3.5
 
 @export_group("Audio")
-@export var footstep_sounds  : Array[AudioStream] = []
+@export var footstep_sounds          : Array[AudioStream] = []
+@export var footstep_sounds_concrete : Array[AudioStream] = []
+@export var footstep_sounds_dirt     : Array[AudioStream] = []
 @export var damage_sounds    : Array[AudioStream] = []
 @export var death_sounds     : Array[AudioStream] = []
 @export var hurt_sounds      : Array[AudioStream] = []
@@ -113,8 +115,9 @@ var topdown_mode : bool = false
 var shop_open    : bool = false
 var _tab_state   : int  = 0
 var _deck_open              : bool         = false
-var _class_selecting        : bool         = false   # true while ClassSelectUI is active
-var _class_select_ui        : Node         = null    # ClassSelectUI (CanvasLayer) inside SubViewport
+var _class_selecting        : bool         = false
+var _class_select_ui        : Node         = null
+var hud                     : Node         = null   # this player's own HUD — set by SSM
 
 var health     : float = 100.0
 var max_health : float = 100.0
@@ -138,6 +141,9 @@ const SWORD_DRAIN_PER_KILL : float = 8.0
 var ult_charge     : float = 0.0
 var ult_charge_max : float = 100.0
 const ULT_CHARGE_PER_KILL : float = 12.0
+const ULT_CHARGE_PER_DMG  : float = 0.04   # charge gained per damage point dealt
+# Ult charge spent when a class ability fires (slot 3 = movement, always free)
+const ULT_ABILITY_COSTS : Array[float] = [8.0, 15.0, 25.0, 0.0]
 
 # ── Class lock ───────────────────────────────────────────────
 var _class_lock_timer    : float = 0.0
@@ -153,6 +159,23 @@ const SYNERGY_DURATION  : float = 6.0
 
 # ── Selected perk ─────────────────────────────────────────────
 var selected_perk : String = ""
+
+# ── Grenades ──────────────────────────────────────────────────
+var frag_grenades       : int   = 3
+var flame_grenades      : int   = 2
+var _frag_cd            : float = 0.0
+var _flame_cd           : float = 0.0
+const FRAG_COOLDOWN     : float = 8.0
+const FLAME_COOLDOWN    : float = 10.0
+const FRAG_RADIUS       : float = 8.0
+const FRAG_DAMAGE       : float = 180.0
+const FLAME_RADIUS      : float = 10.0
+const FLAME_DAMAGE      : float = 40.0
+const FLAME_DURATION    : float = 5.0
+
+# ── Purifier beacon ───────────────────────────────────────────
+var _purifier_cd        : float = 0.0
+const PURIFIER_COOLDOWN : float = 45.0
 
 var ability_slots     : Array        = [null]
 var ability_cooldowns : Array[float] = [0.0]
@@ -185,6 +208,9 @@ var _td_zoom_time   : float = 0.0
 var _td_zoom_base   : float = 0.0
 const TD_ZOOM_SPEED : float = 0.35
 const TD_ZOOM_RANGE : float = 1.8
+var _transitioning   : bool        = false
+var _transition_cl   : CanvasLayer = null
+var _transition_rect : ColorRect   = null
 var _grappler          : Node = null
 var _mounted_dragon    : Node = null
 var _dragon_zoom       : float = 55.0
@@ -221,6 +247,7 @@ var _footstep     : AudioStreamPlayer3D = null
 var _foot_timer   : float = 0.0
 var cursor_node   : Control = null
 var cursor_pos    : Vector2 = Vector2.ZERO
+var _minimap      : Node    = null
 
 signal health_changed(current: float, maximum: float)
 signal abilities_changed()
@@ -236,6 +263,7 @@ func _ready() -> void:
 	print("=== PLAYER.GD v7 LOADED — if you don't see this, wrong file ===")
 	call_deferred("_show_class_select")
 	add_to_group("player")
+	add_to_group("players")
 	add_to_group("units")
 	health = max_health
 
@@ -304,22 +332,42 @@ func _ready() -> void:
 	else:
 		push_warning("[Player] PlayerEnergyAura.gd not found — place it at res://scripts/PlayerEnergyAura.gd")
 
+	# Restore crystals from run save (class is restored in _show_class_select)
+	var _rsm_r := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(_rsm_r) and _rsm_r.has_save():
+		var _sc : int = _rsm_r.get_player_crystals(player_id)
+		if _sc > 0:
+			crystals = _sc
+			crystals_changed.emit(crystals)
+
+	var _mm_scr : Script = null
+	for _mm_path in ["res://MinimapOverlay.gd", "res://scripts/MinimapOverlay.gd"]:
+		if ResourceLoader.exists(_mm_path):
+			_mm_scr = load(_mm_path) as Script
+			break
+	if is_instance_valid(_mm_scr):
+		_minimap = _mm_scr.new()
+		_minimap.name = "MinimapOverlay"
+		add_child(_minimap)
+
 
 # ============================================================
 # WEAPON MANAGER BINDING — deferred, searches full scene tree
 # ============================================================
 func _bind_weapon_manager() -> void:
-	# Search by group first (add WeaponsManager to group 'weapon_manager' in Godot editor)
-	for node in get_tree().get_nodes_in_group("weapon_manager"):
-		if is_instance_valid(node) and node.has_method("bind_player"):
-			weapon_manager = node
-			break
+	# Own subtree FIRST — in split screen every player has their own WeaponsManager
+	# descendant.  Never grab a sibling player's WM.
+	var own := find_children("WeaponsManager", "Node", true, false)
+	if not own.is_empty() and is_instance_valid(own[0]) and own[0].has_method("bind_player"):
+		weapon_manager = own[0]
 
-	# Fallback: find by name anywhere in entire scene tree
+	# Group fallback — only accept nodes that live under this player
 	if not is_instance_valid(weapon_manager):
-		var found := get_tree().get_root().find_children("WeaponsManager", "Node", true, false)
-		if not found.is_empty():
-			weapon_manager = found[0]
+		for node in get_tree().get_nodes_in_group("weapon_manager"):
+			if is_instance_valid(node) and node.has_method("bind_player") \
+					and is_ancestor_of(node):
+				weapon_manager = node
+				break
 
 	if is_instance_valid(weapon_manager):
 		weapon_manager.bind_player(self, fps_camera)
@@ -329,6 +377,14 @@ func _bind_weapon_manager() -> void:
 
 
 func _show_class_select() -> void:
+	# If a run save already recorded a class for this player, restore it directly
+	var _rsm_cs := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(_rsm_cs) and _rsm_cs.has_save():
+		var _saved_cls : int = _rsm_cs.get_player_class(player_id)
+		if _saved_cls != 0:
+			_on_class_chosen(_saved_cls)
+			return
+
 	var scr : Script = null
 	for _sp in ["res://scripts/ClassSelectUI.gd", "res://ClassSelectUI.gd"]:
 		if ResourceLoader.exists(_sp): scr = load(_sp) as Script; break
@@ -420,10 +476,16 @@ func _on_class_chosen(class_id: int) -> void:
 func _show_deck_ui() -> void:
 	if _deck_open: return
 	await get_tree().process_frame
-	# Only make mouse visible for KBM player — gamepad players use stick
-	if device_id == -1:
-		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	var pid : int = int(get("player_id") if "player_id" in self else 1)
+
+	# Find which viewport this player belongs to via SSM
+	var parent_vp : Node = get_viewport()
+	var ssm := get_tree().get_first_node_in_group("splitscreen_manager")
+	if is_instance_valid(ssm) and ssm.has_method("get_player_viewport"):
+		var pv : Node = ssm.call("get_player_viewport", pid - 1)
+		if is_instance_valid(pv): parent_vp = pv
+
 	_deck_ui = null
 	for node in get_tree().get_nodes_in_group("creep_deck_ui"):
 		if is_instance_valid(node) and node.has_meta("owner_pid") and int(node.get_meta("owner_pid")) == pid:
@@ -439,16 +501,24 @@ func _show_deck_ui() -> void:
 		_deck_ui.set_script(scr)
 		_deck_ui.set_meta("owner_pid", pid)
 		_deck_ui.add_to_group("creep_deck_ui")
-		get_tree().root.add_child(_deck_ui)
+		# Add to player's SubViewport so it fills their screen quadrant
+		parent_vp.add_child(_deck_ui)
+	# Allow all containers to pass mouse so every player can click their deck
+	if is_instance_valid(ssm) and ssm.has_method("set_all_containers_mouse_pass"):
+		ssm.set_all_containers_mouse_pass(true)
 	if _deck_ui.has_method("show_for_player"):
 		_deck_open = true
-		_deck_ui.show_for_player(pid, null)
+		_deck_ui.show_for_player(pid, parent_vp)
 		if _deck_ui.has_signal("deck_confirmed"):
 			if not _deck_ui.deck_confirmed.is_connected(_on_deck_confirmed):
 				_deck_ui.deck_confirmed.connect(_on_deck_confirmed)
 
 func _on_deck_confirmed(pid: int, deck: Array) -> void:
 	_deck_open = false
+	# Restore gamepad players' containers to IGNORE so their mouse doesn't bleed into KBM space
+	var ssm2 := get_tree().get_first_node_in_group("splitscreen_manager")
+	if is_instance_valid(ssm2) and ssm2.has_method("set_all_containers_mouse_pass"):
+		ssm2.set_all_containers_mouse_pass(false)
 	# NOTE: players live in the scene root, so get_viewport() returns the root Window,
 	# never a SubViewport. Do NOT touch handle_input_locally here — that is SSM's
 	# responsibility and must always stay true on player SubViewports.
@@ -598,9 +668,25 @@ func _set_body_visible(visible_flag: bool) -> void:
 # ============================================================
 func _a(n: String) -> String: return "p%d_%s" % [player_id, n]
 func _act(n: String) -> bool:
-	return InputMap.has_action(_a(n)) and Input.is_action_pressed(_a(n))
+	if device_id == -99: return false   # no device assigned — block all input
+	if not InputMap.has_action(_a(n)): return false
+	if Input.is_action_pressed(_a(n)):
+		var ev_list := InputMap.action_get_events(_a(n))
+		for ev in ev_list:
+			if ev is InputEventKey or ev is InputEventMouseButton:
+				return device_id == -1  # KBM-bound action: only KBM player fires it
+		return true  # gamepad action: Godot filters by device automatically
+	return false
 func _act_just(n: String) -> bool:
-	return InputMap.has_action(_a(n)) and Input.is_action_just_pressed(_a(n))
+	if device_id == -99: return false
+	if not InputMap.has_action(_a(n)): return false
+	if Input.is_action_just_pressed(_a(n)):
+		var ev_list := InputMap.action_get_events(_a(n))
+		for ev in ev_list:
+			if ev is InputEventKey or ev is InputEventMouseButton:
+				return device_id == -1
+		return true
+	return false
 func _act_strength(n: String) -> float:
 	return Input.get_action_strength(_a(n)) if InputMap.has_action(_a(n)) else 0.0
 func _axis(axis: int) -> float:
@@ -613,14 +699,16 @@ func _axis(axis: int) -> float:
 # INPUT
 # ============================================================
 func _unhandled_input(event: InputEvent) -> void:
+	if device_id == -99: return   # no device assigned
 	if is_dead: return
+	if _class_selecting or _deck_open: return
 	if device_id == -1 and event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
 		if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED \
-				and current_mode == CameraMode.FPS and not shop_open and not _deck_open:
+				and current_mode == CameraMode.FPS and not shop_open:
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
+	if device_id == -1 and event is InputEventKey and event.pressed and not event.echo:
 
 		if event.keycode == KEY_K:
 			var cam_pos := get_viewport().get_camera_3d().global_position
@@ -681,6 +769,8 @@ func _input(event: InputEvent) -> void:
 
 	if device_id == -1 and event is InputEventKey and (event as InputEventKey).pressed \
 			and not (event as InputEventKey).echo:
+		# Block all gameplay input while selecting class or deck
+		if _class_selecting or _deck_open: return
 		match (event as InputEventKey).physical_keycode:
 			KEY_TAB:
 				if device_id == -1: _cycle_tab()
@@ -727,8 +817,12 @@ func _input(event: InputEvent) -> void:
 			KEY_2: _try_class_ability(1)
 			KEY_3: _try_class_ability(2)
 			KEY_4: _try_class_ability(3)
+			KEY_V: _try_fire_ult()
+			KEY_T: _throw_grenade(false)   # frag
+			KEY_B: _throw_grenade(true)    # flame
+			KEY_P: _deploy_purifier()
 
-	if device_id == -1 and not shop_open and event is InputEventMouseButton:
+	if device_id == -1 and not shop_open and not _class_selecting and not _deck_open and event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed:
 			# ── Ground-targeting confirmation / cancellation ──
@@ -827,15 +921,13 @@ func _physics_process(delta: float) -> void:
 
 	if _on_ladder and global_position.y < _ladder_top_y:
 		var fwd_input : float = 0.0
-		if device_id < 0:
-			fwd_input = Input.get_axis("move_back","move_forward") if InputMap.has_action("move_forward") \
-				else (1.0 if Input.is_key_pressed(KEY_W) else (-1.0 if Input.is_key_pressed(KEY_S) else 0.0))
+		if device_id == -1:
+			fwd_input = _act_strength("move_forward") - _act_strength("move_backward")
 		else:
 			fwd_input = -_axis(JOY_AXIS_LEFT_Y)
 		velocity.x = 0.0; velocity.z = 0.0
 		velocity.y = fwd_input * _ladder_climb_speed
-		if Input.is_action_just_pressed("jump") if InputMap.has_action("jump") \
-				else Input.is_key_pressed(KEY_SPACE):
+		if _act_just("jump"):
 			_on_ladder = false
 			velocity.y = jump_velocity * 0.6
 		move_and_slide(); return
@@ -900,7 +992,7 @@ func _handle_mouse_look(delta: float) -> void:
 	mouse_input.x = clampf(mouse_input.x, -300.0, 300.0)
 	mouse_input.y = clampf(mouse_input.y, -300.0, 300.0)
 	var safe_delta : float = minf(delta, 0.05)
-	smooth_mouse = smooth_mouse.lerp(mouse_input, mouse_smoothing * safe_delta)
+	smooth_mouse = smooth_mouse.lerp(mouse_input, 1.0 - exp(-mouse_smoothing * safe_delta))
 	var rel      := smooth_mouse
 	mouse_input   = Vector2.ZERO
 	if rel.length_squared() < 0.00001: return
@@ -928,13 +1020,8 @@ func _handle_fps_movement(delta: float) -> void:
 	var strafe := 0.0
 	var fwd    := 0.0
 	if device_id == -1:
-		if Input.is_key_pressed(KEY_D): strafe += 1.0
-		if Input.is_key_pressed(KEY_A): strafe -= 1.0
-		if Input.is_key_pressed(KEY_W): fwd    += 1.0
-		if Input.is_key_pressed(KEY_S): fwd    -= 1.0
-		if InputMap.has_action(_a("move_right")):
-			strafe += _act_strength("move_right") - _act_strength("move_left")
-			fwd    += _act_strength("move_forward") - _act_strength("move_backward")
+		strafe = _act_strength("move_right") - _act_strength("move_left")
+		fwd    = _act_strength("move_forward") - _act_strength("move_backward")
 	else:
 		strafe = _axis(JOY_AXIS_LEFT_X)
 		fwd    = -_axis(JOY_AXIS_LEFT_Y)
@@ -991,21 +1078,11 @@ func _handle_topdown_movement(delta: float) -> void:
 			velocity.z = _dash_dir.z * dash_speed
 			return
 
-	if device_id == -1:
-		move_input = Input.get_vector(_a("move_left"), _a("move_right"), _a("move_forward"), _a("move_backward"))
-	else:
-		move_input = Vector2(_axis(JOY_AXIS_LEFT_X), _axis(JOY_AXIS_LEFT_Y))
-
 	var strafe := 0.0
 	var fwd    := 0.0
 	if device_id == -1:
-		if Input.is_key_pressed(KEY_D): strafe += 1.0
-		if Input.is_key_pressed(KEY_A): strafe -= 1.0
-		if Input.is_key_pressed(KEY_W): fwd    += 1.0
-		if Input.is_key_pressed(KEY_S): fwd    -= 1.0
-		if InputMap.has_action(_a("move_right")):
-			strafe += _act_strength("move_right") - _act_strength("move_left")
-			fwd    += _act_strength("move_forward") - _act_strength("move_backward")
+		strafe = _act_strength("move_right") - _act_strength("move_left")
+		fwd    = _act_strength("move_forward") - _act_strength("move_backward")
 	else:
 		strafe = _axis(JOY_AXIS_LEFT_X)
 		fwd    = -_axis(JOY_AXIS_LEFT_Y)
@@ -1101,7 +1178,7 @@ func _update_fov(delta: float) -> void:
 # COMBAT
 # ============================================================
 func _combat() -> void:
-	if not is_instance_valid(weapon_manager) or shop_open: return
+	if not is_instance_valid(weapon_manager) or shop_open or _class_selecting or _deck_open: return
 	var shooting := false
 	if current_mode == CameraMode.TOPDOWN:
 		if device_id == -1: shooting = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
@@ -1110,6 +1187,8 @@ func _combat() -> void:
 		shooting = _act("shoot")
 	if shooting and not _grappler_equipped and not is_instance_valid(_mounted_dragon):
 		weapon_manager.try_shoot()
+	elif not shooting:
+		weapon_manager.stop_shoot()
 	if _act_just("reload"):      weapon_manager.try_reload()
 	if _act_just("next_weapon"): weapon_manager.switch_weapon(1)
 	if _act_just("prev_weapon"): weapon_manager.switch_weapon(-1)
@@ -1123,12 +1202,36 @@ func play_shoot_animation() -> void:
 # ============================================================
 # TOPDOWN / FPS MODE SWITCH
 # ============================================================
+func _get_transition_overlay() -> ColorRect:
+	if not is_instance_valid(_transition_cl):
+		_transition_cl = CanvasLayer.new()
+		_transition_cl.layer = 128
+		add_child(_transition_cl)
+		_transition_rect = ColorRect.new()
+		_transition_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_transition_rect.color = Color(0.0, 0.0, 0.0, 0.0)
+		_transition_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_transition_cl.add_child(_transition_rect)
+	return _transition_rect
+
+
 func set_topdown_mode(enabled: bool) -> void:
+	if _transitioning: return
 	if not is_instance_valid(fps_camera):
 		push_error("[Player] fps_camera is null"); return
 	if not is_instance_valid(td_camera):
 		push_error("[Player] td_camera is null"); return
 
+	_transitioning = true
+	var overlay := _get_transition_overlay()
+	var tw := create_tween()
+	tw.tween_property(overlay, "color", Color(0.0, 0.0, 0.0, 1.0), 0.12)
+	tw.tween_callback(func(): _do_mode_switch(enabled))
+	tw.tween_property(overlay, "color", Color(0.0, 0.0, 0.0, 0.0), 0.25)
+	tw.tween_callback(func(): _transitioning = false)
+
+
+func _do_mode_switch(enabled: bool) -> void:
 	fps_pivot.rotation = Vector3.ZERO
 	var ssm := get_tree().get_first_node_in_group("splitscreen_manager")
 
@@ -1152,8 +1255,7 @@ func set_topdown_mode(enabled: bool) -> void:
 		td_pivot.global_position = Vector3(global_position.x, start_y, global_position.z)
 		td_pivot.global_rotation = Vector3(deg_to_rad(topdown_angle), 0.0, 0.0)
 		td_camera.rotation       = Vector3.ZERO
-		var tw := create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		tw.tween_property(td_pivot, "global_position:y", global_position.y + topdown_height, 0.55)
+		td_pivot.global_position.y = global_position.y + topdown_height
 		if is_instance_valid(weapon_manager):
 			weapon_manager.visible = false
 			if weapon_manager.has_method("update_camera"): weapon_manager.update_camera(td_camera)
@@ -1163,6 +1265,7 @@ func set_topdown_mode(enabled: bool) -> void:
 			Input.flush_buffered_events()
 			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 		_spawn_cursor()
+		if is_instance_valid(_minimap): _minimap.show_for(self)
 		for h in get_tree().get_nodes_in_group("hud"):
 			if h.has_method("set_topdown_mode"): h.set_topdown_mode(true)
 			elif "crosshair" in h and h.crosshair: h.crosshair.visible = false
@@ -1187,6 +1290,7 @@ func set_topdown_mode(enabled: bool) -> void:
 				weapon_manager.reequip_current()
 		_set_body_visible(false)
 		_destroy_cursor()
+		if is_instance_valid(_minimap): _minimap.hide_map()
 		for h in get_tree().get_nodes_in_group("hud"):
 			if h.has_method("set_topdown_mode"): h.set_topdown_mode(false)
 			elif "crosshair" in h and h.crosshair: h.crosshair.visible = true
@@ -1401,6 +1505,8 @@ func take_damage(amount: float, instigator: Node = null) -> void:
 
 func _die() -> void:
 	if is_dead: return
+	var ss_d := get_tree().get_first_node_in_group("screen_shake")
+	if is_instance_valid(ss_d) and ss_d.has_method("death_impulse"): ss_d.death_impulse()
 	is_dead = true; velocity = Vector3.ZERO; died.emit()
 	_play_sound(death_sounds)
 	# ReviveManager handles respawn — if no revives, it triggers game over
@@ -1441,15 +1547,20 @@ func on_kill(killed_node: Node = null) -> void:
 	_kill_streak_timer   = KILL_STREAK_WINDOW
 	_announce_streak()
 
-	# Sword decay
+	# Sword decay on sword kills, small recharge on gun kills
 	if _is_sword_equipped():
 		sword_charge = maxf(0.0, sword_charge - SWORD_DRAIN_PER_KILL)
 		_update_sword_hud()
 		if sword_charge <= 0.0:
-			_show_message("⚔ Sword drained! Kill a glowing zombie to recharge.", Color(1.0, 0.3, 0.1))
+			_show_message("⚔ Sword drained! Kill enemies with guns to recharge.", Color(1.0, 0.3, 0.1))
+	else:
+		# Gun kill recharges sword by 3 per kill
+		sword_charge = minf(sword_charge + 3.0, sword_max_charge)
+		_update_sword_hud()
 
-	# Ult charge
-	ult_charge = minf(ult_charge + ULT_CHARGE_PER_KILL, ult_charge_max)
+	# Ult charge — per-class gain multiplier
+	var _ult_kill_mult : float = CLASS_ULT_GAIN_MULT.get(player_class, 1.0)
+	ult_charge = minf(ult_charge + ULT_CHARGE_PER_KILL * _ult_kill_mult, ult_charge_max)
 	_update_ult_hud()
 
 	# Class mastery
@@ -1460,7 +1571,11 @@ func on_kill(killed_node: Node = null) -> void:
 	if Engine.has_singleton("AchievementManager"):
 		Engine.get_singleton("AchievementManager").call("on_kill", player_id, killed_node)
 
-	_ = killed_node  # suppress unused warning
+
+func on_damage_dealt(amount: float) -> void:
+	var _ult_dmg_mult : float = CLASS_ULT_GAIN_MULT.get(player_class, 1.0)
+	ult_charge = minf(ult_charge + amount * ULT_CHARGE_PER_DMG * _ult_dmg_mult, ult_charge_max)
+	_update_ult_hud()
 
 
 func _announce_streak() -> void:
@@ -1468,32 +1583,435 @@ func _announce_streak() -> void:
 	if _kill_streak_count < 2: return
 	var idx   : int    = mini(_kill_streak_count, STREAK_NAMES.size() - 1)
 	var name  : String = STREAK_NAMES[idx]
-	var col   : Color
+	var col : Color = Color(1.0, 0.15, 0.1)
 	match idx:
-		2:     col = Color(0.4, 0.9, 0.4)
-		3:     col = Color(0.9, 0.8, 0.1)
-		4:     col = Color(1.0, 0.55, 0.1)
-		_:     col = Color(1.0, 0.15, 0.1)
-	for hud in get_tree().get_nodes_in_group("hud"):
-		if hud.has_method("show_message"): hud.show_message(name, col)
+		2: col = Color(0.4, 0.9, 0.4)
+		3: col = Color(0.9, 0.8, 0.1)
+		4: col = Color(1.0, 0.55, 0.1)
+	_hud_message(name, col)
+
+
+func _my_hud() -> Node:
+	# Return this player's own HUD — never broadcasts to other players' screens
+	if is_instance_valid(hud): return hud
+	# Fallback: find HUD that lives inside our SubViewport
+	var vp := get_viewport()
+	if is_instance_valid(vp):
+		for h in get_tree().get_nodes_in_group("hud"):
+			if is_instance_valid(h) and vp.is_ancestor_of(h):
+				hud = h; return h
+	return null
+
+
+func _hud_message(text: String, color: Color = Color.WHITE) -> void:
+	var h := _my_hud()
+	if is_instance_valid(h) and h.has_method("show_message"): h.show_message(text, color)
 
 
 func _update_sword_hud() -> void:
-	for hud in get_tree().get_nodes_in_group("hud"):
-		if hud.has_method("update_sword_charge"):
-			hud.update_sword_charge(sword_charge, sword_max_charge)
+	var h := _my_hud()
+	if is_instance_valid(h) and h.has_method("update_sword_charge"):
+		h.update_sword_charge(sword_charge, sword_max_charge)
 
 
 func _update_ult_hud() -> void:
-	for hud in get_tree().get_nodes_in_group("hud"):
-		if hud.has_method("update_ult_charge"):
-			hud.update_ult_charge(ult_charge, ult_charge_max)
+	var h := _my_hud()
+	if is_instance_valid(h) and h.has_method("update_ult_charge"):
+		var ult_name : String = CLASS_ULT_NAMES.get(player_class, "ULTIMATE")
+		h.update_ult_charge(ult_charge, ult_charge_max, ult_name)
+
+
+func _try_fire_ult() -> void:
+	if ult_charge < ult_charge_max:
+		var pct := int(ult_charge / ult_charge_max * 100.0)
+		_show_message("⚡ Ult not ready — %d%%" % pct, Color(0.6, 0.6, 0.7))
+		return
+	ult_charge = 0.0
+	_update_ult_hud()
+	_fire_ult_ability()
+
+
+# ============================================================
+# ULTIMATE ABILITIES — one per class, V key, kill-charged
+# Each is intentionally overpowered (Overwatch ult tier)
+# ============================================================
+func _fire_ult_ability() -> void:
+	var vfx := get_tree().get_first_node_in_group("vfx_manager")
+	if is_instance_valid(vfx): vfx.level_up(global_position)
+	else: _vfx_burst(global_position, Color(1.0, 0.9, 0.1), 40, 1.2)
+
+	match player_class:
+
+		PlayerClass.NECROMANCER:
+			# DEATH RISES — raise every dead zombie on screen as a permanent thrall
+			_show_message("☠ DEATH RISES — All fallen obey you!", Color(0.4, 1.0, 0.5))
+			var raised := 0
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body): continue
+				if body == self: continue
+				var dead_val = body.get("is_dead")
+				if dead_val is bool and dead_val:
+					if "team_id" in body: body.set("team_id", team_id)
+					body.set("is_dead", false)
+					if "health" in body: body.set("health", float(body.get("max_health") if "max_health" in body else 80.0))
+					body.set_physics_process(true)
+					raised += 1
+					_vfx_burst(body.global_position, Color(0.2, 1.0, 0.4), 8, 0.5)
+			_show_message("☠ %d corpses raised!" % raised, Color(0.3, 1.0, 0.5))
+
+		PlayerClass.BERSERKER:
+			# WORLD BREAKER — shockwave kills everything in 18m, then 12s of 3× damage + infinite sprint
+			_show_message("💥 WORLD BREAKER!", Color(1.0, 0.2, 0.1))
+			_vfx_ring(global_position, Color(1.0, 0.3, 0.0), 18.0, 0.8)
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				var d := global_position.distance_to(body.global_position)
+				if d < 18.0 and body.has_method("take_damage"):
+					body.take_damage(99999.0, self)
+			_berserk_timer   = 12.0
+			_sprint_boost_timer = 12.0
+			upgrades["damage"] = upgrades.get("damage", 0.0) + 30.0
+			get_tree().create_timer(12.0).timeout.connect(func(): upgrades["damage"] = maxf(0.0, upgrades.get("damage", 0.0) - 30.0))
+
+		PlayerClass.PALADIN:
+			# DIVINE WRATH — heal to full, 8s invincibility, holy nova kills all in 12m
+			_show_message("✨ DIVINE WRATH — Blessed and Unstoppable!", Color(1.0, 1.0, 0.6))
+			health = max_health
+			health_changed.emit(health, max_health)
+			_shield_timer = 8.0
+			_vfx_ring(global_position, Color(1.0, 1.0, 0.4), 12.0, 1.0)
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if global_position.distance_to(body.global_position) < 12.0 and body.has_method("take_damage"):
+					body.take_damage(99999.0, self)
+
+		PlayerClass.SHADOWBLADE:
+			# SHADOW EXECUTION — teleport to up to 8 enemies and one-shot each
+			_show_message("🗡 SHADOW EXECUTION — No escape!", Color(0.5, 0.1, 0.9))
+			var targets : Array = []
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if "is_dead" in body and body.get("is_dead") is bool and body.get("is_dead"): continue
+				targets.append(body)
+			targets.sort_custom(func(a, b): return global_position.distance_to(a.global_position) < global_position.distance_to(b.global_position))
+			var kill_count := mini(8, targets.size())
+			for i in kill_count:
+				var t : Node3D = targets[i] as Node3D
+				if not is_instance_valid(t): continue
+				var prev_pos := global_position
+				global_position = t.global_position + Vector3(0.5, 0, 0.5)
+				_vfx_burst(t.global_position, Color(0.5, 0.0, 1.0), 12, 0.4)
+				t.take_damage(99999.0, self)
+				await get_tree().create_timer(0.1).timeout
+			_show_message("🗡 %d enemies executed!" % kill_count, Color(0.7, 0.3, 1.0))
+
+		PlayerClass.STORMCALLER:
+			# STORM SURGE — 6s lightning strikes hit every enemy on map every 0.5s
+			_show_message("⚡ STORM SURGE — Lightning everywhere!", Color(0.4, 0.8, 1.0))
+			var storm_ticks := 12
+			for tick in storm_ticks:
+				get_tree().create_timer(tick * 0.5).timeout.connect(func():
+					for body in get_tree().get_nodes_in_group("units"):
+						if not is_instance_valid(body) or body == self: continue
+						if "team_id" in body and int(body.get("team_id")) == team_id: continue
+						if "is_dead" in body and body.get("is_dead") is bool and body.get("is_dead"): continue
+						if body.has_method("take_damage"): body.take_damage(45.0, self)
+						_vfx_burst(body.global_position, Color(0.5, 0.9, 1.0), 4, 0.2))
+
+		PlayerClass.BLOODMAGE:
+			# BLOOD NOVA — consume 60% HP for a massive nova, then 15s lifesteal every hit
+			var sacrifice := max_health * 0.6
+			health = maxf(10.0, health - sacrifice)
+			health_changed.emit(health, max_health)
+			var nova_dmg := sacrifice * 8.0
+			_show_message("🩸 BLOOD NOVA — %d damage!" % int(nova_dmg), Color(0.9, 0.1, 0.3))
+			_vfx_ring(global_position, Color(1.0, 0.1, 0.3), 25.0, 1.2)
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				var d := global_position.distance_to(body.global_position)
+				if d < 25.0 and body.has_method("take_damage"):
+					body.take_damage(nova_dmg * (1.0 - d / 25.0), self)
+			_double_damage_timer = 15.0
+
+		PlayerClass.TIMEWEAVER:
+			# TIME STOP — freeze all enemies for 10s, player moves 2× faster
+			_show_message("⏳ TIME STOP — The world stands still!", Color(0.6, 0.9, 1.0))
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				body.set_physics_process(false)
+				body.set_process(false)
+			_sprint_boost_timer = 10.0
+			get_tree().create_timer(10.0).timeout.connect(func():
+				for body in get_tree().get_nodes_in_group("units"):
+					if is_instance_valid(body) and body != self:
+						body.set_physics_process(true)
+						body.set_process(true))
+			_show_message("⏳ Time resumes in 10s…", Color(0.5, 0.8, 1.0))
+
+		PlayerClass.VOIDWALKER:
+			# VOID COLLAPSE — black hole pulls all enemies within 30m to your feet, then crushes them
+			_show_message("🌀 VOID COLLAPSE — Nothing escapes!", Color(0.4, 0.1, 0.9))
+			var pull_targets : Array = []
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if global_position.distance_to(body.global_position) < 30.0:
+					pull_targets.append(body)
+			# Pull phase
+			for t in pull_targets:
+				var tw2 := get_tree().create_tween()
+				if t is Node3D:
+					tw2.tween_property(t, "global_position", global_position + Vector3(randf_range(-1,1), 0, randf_range(-1,1)), 0.8)
+			# Crush after pull
+			get_tree().create_timer(0.9).timeout.connect(func():
+				for t in pull_targets:
+					if is_instance_valid(t) and t.has_method("take_damage"):
+						t.take_damage(99999.0, self)
+				_vfx_burst(global_position, Color(0.3, 0.0, 0.8), 60, 1.5))
+
+		PlayerClass.IRONCLAD:
+			# FORTRESS — 12s unkillable, auto-taunt all enemies toward you, reflect damage
+			_show_message("🛡 FORTRESS — None shall pass!", Color(0.7, 0.8, 1.0))
+			_shield_timer = 12.0
+			health = max_health
+			health_changed.emit(health, max_health)
+			# Force all enemies to charge you
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if "enemy_base" in body: body.set("enemy_base", self)
+			_vfx_ring(global_position, Color(0.7, 0.85, 1.0), 6.0, 1.5)
+
+		PlayerClass.PLAGUEMASTER:
+			# PANDEMIC — instant-infect every zombie on the map with lethal plague
+			_show_message("☣ PANDEMIC — The plague spreads everywhere!", Color(0.2, 0.9, 0.3))
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if "is_dead" in body and body.get("is_dead") is bool and body.get("is_dead"): continue
+				# Infect with heavy DoT
+				body.set_meta("plague_ult_dot", 25.0)
+				body.set_meta("plague_ult_timer", 12.0)
+				_vfx_burst(body.global_position, Color(0.1, 0.9, 0.2), 6, 0.4)
+			# Tick the plague DoT
+			for _i in 24:
+				get_tree().create_timer(_i * 0.5).timeout.connect(func():
+					for body in get_tree().get_nodes_in_group("units"):
+						if not is_instance_valid(body): continue
+						if body.has_meta("plague_ult_dot") and body.has_method("take_damage"):
+							body.take_damage(body.get_meta("plague_ult_dot"), self))
+
+		PlayerClass.SOULREAPER:
+			# HARVEST — instantly kill all enemies below 40% HP; each kill drops a soul explosion
+			_show_message("💀 HARVEST — Reap what they sow!", Color(0.8, 0.3, 1.0))
+			var reaped := 0
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if "health" in body and "max_health" in body:
+					var ratio := float(body.get("health")) / maxf(float(body.get("max_health")), 1.0)
+					if ratio <= 0.4 and body.has_method("take_damage"):
+						body.take_damage(99999.0, self)
+						_vfx_ring(body.global_position, Color(0.7, 0.1, 1.0), 3.0, 0.5)
+						reaped += 1
+			# Soul explosion: damage enemies near each harvested position
+			_show_message("💀 %d souls harvested!" % reaped, Color(0.8, 0.4, 1.0))
+			ult_charge = minf(float(reaped) * 5.0, ult_charge_max * 0.3)
+			_update_ult_hud()
+
+		PlayerClass.WARLOCK:
+			# HELLGATE — summon 15 demon clones of yourself for 25s
+			_show_message("🔥 HELLGATE — Demons, rise!", Color(1.0, 0.4, 0.1))
+			if ResourceLoader.exists("res://zombie/zombie.tscn"):
+				var packed : PackedScene = load("res://zombie/zombie.tscn")
+				for i in 15:
+					var demon := packed.instantiate()
+					if "team_id"    in demon: demon.set("team_id", team_id)
+					if "max_health" in demon: demon.set("max_health", 300.0)
+					if "health"     in demon: demon.set("health",     300.0)
+					if "damage"     in demon: demon.set("damage",     40.0)
+					if "move_speed" in demon: demon.set("move_speed", 5.5)
+					var dpos := global_position + Vector3(randf_range(-6.0, 6.0), 0.0, randf_range(-6.0, 6.0))
+					var sp2 := get_tree().root.get_world_3d().direct_space_state
+					if is_instance_valid(sp2):
+						var ray2 := PhysicsRayQueryParameters3D.create(Vector3(dpos.x, 200.0, dpos.z), Vector3(dpos.x, -50.0, dpos.z))
+						ray2.collision_mask = 1
+						var hit2 := sp2.intersect_ray(ray2)
+						if not hit2.is_empty(): dpos.y = hit2.position.y + 0.5
+					demon.add_to_group("ult_summon")
+					get_tree().current_scene.add_child(demon)
+					demon.global_position = dpos
+					_vfx_burst(demon.global_position, Color(1.0, 0.3, 0.0), 10, 0.5)
+				get_tree().create_timer(25.0).timeout.connect(func():
+					for d in get_tree().get_nodes_in_group("ult_summon"):
+						if is_instance_valid(d): d.queue_free())
+
+		PlayerClass.PHOENIX:
+			# SUPERNOVA — massive 35m explosion, then instantly revive with full HP
+			_show_message("🔥 SUPERNOVA — BURN!", Color(1.0, 0.5, 0.1))
+			_vfx_ring(global_position, Color(1.0, 0.55, 0.1), 35.0, 1.5)
+			_vfx_burst(global_position, Color(1.0, 0.7, 0.1), 80, 2.0)
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				var d := global_position.distance_to(body.global_position)
+				if d < 35.0 and body.has_method("take_damage"):
+					body.take_damage(99999.0 * (1.0 - d / 35.0), self)
+			# Revive with full HP
+			health = max_health
+			health_changed.emit(health, max_health)
+			_shield_timer = 5.0
+
+		PlayerClass.GRAVEMIND:
+			# MIND CONTROL — hijack all enemies within 35m for 20s; they fight for you
+			_show_message("🧠 MIND CONTROL — You are MINE!", Color(0.3, 0.9, 0.5))
+			var hijacked : Array = []
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if global_position.distance_to(body.global_position) < 35.0:
+					body.set("team_id", team_id)
+					hijacked.append(body)
+					_vfx_burst(body.global_position, Color(0.2, 1.0, 0.5), 8, 0.5)
+			get_tree().create_timer(20.0).timeout.connect(func():
+				for b in hijacked:
+					if is_instance_valid(b): b.set("team_id", 2))
+			_show_message("🧠 %d enemies mind-controlled for 20s!" % hijacked.size(), Color(0.3, 1.0, 0.6))
+
+		PlayerClass.DOOMSLAYER:
+			# RECKONING — 15s godmode: every melee swing creates a 10m explosion
+			_show_message("💀 RECKONING — DOOM HAS COME!", Color(0.9, 0.1, 0.1))
+			_shield_timer    = 15.0
+			_berserk_timer   = 15.0
+			_sprint_boost_timer = 15.0
+			health = max_health
+			health_changed.emit(health, max_health)
+			# Every half-second during reckoning, explosion at player position
+			for tick in 30:
+				get_tree().create_timer(tick * 0.5).timeout.connect(func():
+					_vfx_ring(global_position, Color(1.0, 0.1, 0.0), 10.0, 0.3)
+					for body in get_tree().get_nodes_in_group("units"):
+						if not is_instance_valid(body) or body == self: continue
+						if "team_id" in body and int(body.get("team_id")) == team_id: continue
+						if global_position.distance_to(body.global_position) < 10.0:
+							if body.has_method("take_damage"): body.take_damage(200.0, self))
+
+		_:
+			# Generic fallback ult — massive AoE nuke
+			_show_message("⚡ ULTIMATE UNLEASHED!", Color(1.0, 0.85, 0.1))
+			_vfx_ring(global_position, Color(1.0, 0.8, 0.1), 20.0, 1.0)
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if global_position.distance_to(body.global_position) < 20.0 and body.has_method("take_damage"):
+					body.take_damage(500.0, self)
+
+
+func _throw_grenade(flame: bool) -> void:
+	if flame:
+		if _flame_cd > 0.0:
+			_show_message("🔥 Flame grenade: %.1fs" % _flame_cd, Color(0.7, 0.4, 0.1)); return
+		if flame_grenades <= 0:
+			_show_message("🔥 No flame grenades!", Color(0.9, 0.4, 0.1)); return
+		flame_grenades -= 1
+		_flame_cd = FLAME_COOLDOWN
+		_do_flame_grenade()
+	else:
+		if _frag_cd > 0.0:
+			_show_message("💥 Frag grenade: %.1fs" % _frag_cd, Color(0.7, 0.7, 0.2)); return
+		if frag_grenades <= 0:
+			_show_message("💥 No frag grenades!", Color(0.9, 0.8, 0.1)); return
+		frag_grenades -= 1
+		_frag_cd = FRAG_COOLDOWN
+		_do_frag_grenade()
+
+
+func _do_frag_grenade() -> void:
+	# Arc throw toward camera aim, explode on impact or after 2.5s
+	var throw_pos := global_position + Vector3.UP * 1.4
+	var throw_dir := -get_viewport().get_camera_3d().global_transform.basis.z if is_instance_valid(get_viewport().get_camera_3d()) else -global_transform.basis.z
+	_show_message("💥 Frag! [%d left]" % frag_grenades, Color(1.0, 0.9, 0.3))
+	_vfx_burst(throw_pos, Color(0.9, 0.8, 0.2), 6, 0.3)
+	# Simulate travel and explode at aimed position
+	var explode_pos := throw_pos + throw_dir * 18.0
+	var space := get_tree().root.get_world_3d().direct_space_state
+	if is_instance_valid(space):
+		var ray := PhysicsRayQueryParameters3D.create(throw_pos, throw_pos + throw_dir * 25.0)
+		ray.collision_mask = 1
+		var hit := space.intersect_ray(ray)
+		if not hit.is_empty(): explode_pos = hit.position
+	get_tree().create_timer(0.5).timeout.connect(func(): _explode_at(explode_pos, FRAG_RADIUS, FRAG_DAMAGE, Color(1.0, 0.8, 0.2)))
+
+
+func _do_flame_grenade() -> void:
+	var throw_pos := global_position + Vector3.UP * 1.4
+	var throw_dir := -get_viewport().get_camera_3d().global_transform.basis.z if is_instance_valid(get_viewport().get_camera_3d()) else -global_transform.basis.z
+	_show_message("🔥 Flame grenade! [%d left]" % flame_grenades, Color(1.0, 0.45, 0.1))
+	_vfx_burst(throw_pos, Color(1.0, 0.4, 0.0), 6, 0.3)
+	var explode_pos := throw_pos + throw_dir * 16.0
+	var space := get_tree().root.get_world_3d().direct_space_state
+	if is_instance_valid(space):
+		var ray := PhysicsRayQueryParameters3D.create(throw_pos, throw_pos + throw_dir * 22.0)
+		ray.collision_mask = 1
+		var hit := space.intersect_ray(ray)
+		if not hit.is_empty(): explode_pos = hit.position
+	get_tree().create_timer(0.5).timeout.connect(func(): _flame_pool_at(explode_pos))
+
+
+func _explode_at(pos: Vector3, radius: float, damage: float, col: Color) -> void:
+	var vfx := get_tree().get_first_node_in_group("vfx_manager")
+	if is_instance_valid(vfx): vfx.explosion(pos, radius / 8.0, col)
+	else: _vfx_ring(pos, col, radius, 0.6); _vfx_burst(pos, col, 30, 0.8)
+	for body in get_tree().get_nodes_in_group("units"):
+		if not is_instance_valid(body) or body == self: continue
+		if "team_id" in body and int(body.get("team_id")) == team_id: continue
+		if body is Node3D:
+			var d := pos.distance_to((body as Node3D).global_position)
+			if d < radius and body.has_method("take_damage"):
+				body.take_damage(damage * (1.0 - d / radius), self)
+
+
+func _flame_pool_at(pos: Vector3) -> void:
+	var vfx := get_tree().get_first_node_in_group("vfx_manager")
+	if is_instance_valid(vfx): vfx.explosion(pos, 1.2, Color(1.0, 0.35, 0.05))
+	else: _vfx_burst(pos, Color(1.0, 0.4, 0.0), 20, 0.5)
+	# Damage in area repeatedly for FLAME_DURATION seconds
+	var ticks := int(FLAME_DURATION / 0.5)
+	for i in ticks:
+		get_tree().create_timer(i * 0.5).timeout.connect(func():
+			_vfx_burst(pos, Color(1.0, 0.35, 0.0), 5, 0.25)
+			for body in get_tree().get_nodes_in_group("units"):
+				if not is_instance_valid(body) or body == self: continue
+				if "team_id" in body and int(body.get("team_id")) == team_id: continue
+				if body is Node3D:
+					var d := pos.distance_to((body as Node3D).global_position)
+					if d < FLAME_RADIUS and body.has_method("take_damage"):
+						body.take_damage(FLAME_DAMAGE * 0.5, self))
+
+
+func _deploy_purifier() -> void:
+	if _purifier_cd > 0.0:
+		_show_message("⬟ Purifier: %.0fs" % _purifier_cd, Color(0.4, 0.7, 1.0)); return
+	var cm := get_tree().get_first_node_in_group("corruption_manager")
+	if not is_instance_valid(cm):
+		_show_message("No corruption zones active.", Color(0.6, 0.6, 0.6)); return
+	var deploy_pos := global_position
+	# Place slightly in front of player
+	deploy_pos += -global_transform.basis.z * 2.0
+	deploy_pos.y = global_position.y
+	cm.deploy_beacon(deploy_pos)
+	_purifier_cd = PURIFIER_COOLDOWN
 
 
 func recharge_sword(amount: float) -> void:
 	sword_charge = minf(sword_charge + amount, sword_max_charge)
 	_update_sword_hud()
-	_show_message("⚔ Sword recharged!", Color(0.4, 1.0, 0.5))
+	_hud_message("⚔ Sword recharged!", Color(0.4, 1.0, 0.5))
 
 
 # ── Tick meta systems each frame ─────────────────────────────
@@ -1507,6 +2025,11 @@ func _tick_meta_systems(delta: float) -> void:
 	# Class lock countdown
 	if _class_lock_timer > 0.0:
 		_class_lock_timer = maxf(0.0, _class_lock_timer - delta)
+
+	# Grenade + purifier cooldowns
+	if _frag_cd      > 0.0: _frag_cd      = maxf(0.0, _frag_cd      - delta)
+	if _flame_cd     > 0.0: _flame_cd     = maxf(0.0, _flame_cd     - delta)
+	if _purifier_cd  > 0.0: _purifier_cd  = maxf(0.0, _purifier_cd  - delta)
 
 	# Synergy window
 	if _synergy_active:
@@ -1690,6 +2213,36 @@ func _play_sound(sounds: Array[AudioStream]) -> void:
 	_sfx.pitch_scale = randf_range(0.92, 1.08)
 	_sfx.play()
 
+# Returns "concrete", "dirt", or "" by casting a short ray downward and
+# reading the "surface_tag" metadata on whatever the player is standing on.
+# To tag a floor in the editor: select the StaticBody3D → Add Metadata →
+# key: "surface_tag"  type: String  value: "concrete" or "dirt".
+func _detect_floor_surface() -> String:
+	var space : PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	var params := PhysicsRayQueryParameters3D.new()
+	params.from    = global_position + Vector3.UP * 0.1
+	params.to      = global_position + Vector3.DOWN * 0.5
+	params.exclude = [get_rid()]
+	var result : Dictionary = space.intersect_ray(params)
+	if result.is_empty(): return ""
+	var collider = result["collider"]   # Variant — intentionally untyped
+	if not is_instance_valid(collider): return ""
+	if collider.has_meta("surface_tag"):
+		return str(collider.get_meta("surface_tag"))
+	return ""
+
+# Picks the surface-specific pool if populated; falls back to generic pool.
+func _get_footstep_pool() -> Array[AudioStream]:
+	var tag : String = _detect_floor_surface()
+	match tag:
+		"concrete":
+			if not footstep_sounds_concrete.is_empty():
+				return footstep_sounds_concrete
+		"dirt":
+			if not footstep_sounds_dirt.is_empty():
+				return footstep_sounds_dirt
+	return footstep_sounds
+
 func _update_footsteps(delta: float) -> void:
 	var flat : float = Vector2(velocity.x, velocity.z).length()
 	var moving : bool = is_on_floor() and flat > 0.5
@@ -1702,11 +2255,13 @@ func _update_footsteps(delta: float) -> void:
 			tw.tween_callback(func(): _footstep.volume_db = 0.0)
 		return
 	_foot_timer -= delta
-	if _foot_timer <= 0.0 and not footstep_sounds.is_empty():
-		_footstep.stream      = footstep_sounds.pick_random()
-		_footstep.pitch_scale = randf_range(0.93, 1.07)
-		_footstep.volume_db   = 0.0
-		_footstep.play()
+	if _foot_timer <= 0.0:
+		var pool : Array[AudioStream] = _get_footstep_pool()
+		if not pool.is_empty():
+			_footstep.stream      = pool.pick_random()
+			_footstep.pitch_scale = randf_range(0.93, 1.07)
+			_footstep.volume_db   = 0.0
+			_footstep.play()
 		_foot_timer = 0.25 if _act("sprint") else 0.42
 
 func _init_td_camera_look() -> void:
@@ -1835,6 +2390,8 @@ func get_magnetized_direction(dir: Vector3) -> Vector3:
 # ============================================================
 func add_crystal(amount: int = 1) -> void:
 	crystals += amount; crystals_changed.emit(crystals)
+	var _rsm_ac := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(_rsm_ac): _rsm_ac.set_player_crystals(player_id, crystals)
 
 func get_enchant_mult(enchant_type: int) -> float:
 	if enchant_type <= 0 or enchant_type >= enchant_damage_mult.size(): return 1.0
@@ -1851,7 +2408,10 @@ func _enchant_name(t: int) -> String:
 
 func spend_crystals(amount: int) -> bool:
 	if crystals < amount: return false
-	crystals -= amount; crystals_changed.emit(crystals); return true
+	crystals -= amount; crystals_changed.emit(crystals)
+	var _rsm_sc := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(_rsm_sc): _rsm_sc.set_player_crystals(player_id, crystals)
+	return true
 
 func _enchant_nearby_zombies() -> void:
 	var enchant_type : int = 0
@@ -2043,6 +2603,69 @@ const CLASS_NAMES : Dictionary = {
 	PlayerClass.DOOMSLAYER:  "Doomslayer",
 }
 
+const CLASS_ULT_NAMES : Dictionary = {
+	PlayerClass.NONE:        "ULTIMATE",
+	PlayerClass.NECROMANCER: "DEATH RISES",
+	PlayerClass.BERSERKER:   "WORLD BREAKER",
+	PlayerClass.PALADIN:     "DIVINE WRATH",
+	PlayerClass.SHADOWBLADE: "SHADOW EXECUTION",
+	PlayerClass.STORMCALLER: "STORM SURGE",
+	PlayerClass.BLOODMAGE:   "BLOOD NOVA",
+	PlayerClass.TIMEWEAVER:  "TIME STOP",
+	PlayerClass.VOIDWALKER:  "VOID COLLAPSE",
+	PlayerClass.IRONCLAD:    "FORTRESS",
+	PlayerClass.PLAGUEMASTER:"PANDEMIC",
+	PlayerClass.SOULREAPER:  "HARVEST",
+	PlayerClass.WARLOCK:     "HELLGATE",
+	PlayerClass.PHOENIX:     "SUPERNOVA",
+	PlayerClass.GRAVEMIND:   "MIND CONTROL",
+	PlayerClass.DOOMSLAYER:  "RECKONING",
+}
+
+# Per-class ult charge gain multiplier applied to both damage and kill credit
+const CLASS_ULT_GAIN_MULT : Dictionary = {
+	PlayerClass.NONE:         1.0,
+	PlayerClass.NECROMANCER:  1.0,
+	PlayerClass.BERSERKER:    1.5,
+	PlayerClass.PALADIN:      0.8,
+	PlayerClass.SHADOWBLADE:  1.2,
+	PlayerClass.STORMCALLER:  1.3,
+	PlayerClass.BLOODMAGE:    1.1,
+	PlayerClass.TIMEWEAVER:   0.9,
+	PlayerClass.VOIDWALKER:   1.2,
+	PlayerClass.IRONCLAD:     0.7,
+	PlayerClass.PLAGUEMASTER: 1.4,
+	PlayerClass.SOULREAPER:   1.0,
+	PlayerClass.WARLOCK:      1.1,
+	PlayerClass.PHOENIX:      0.8,
+	PlayerClass.GRAVEMIND:    1.2,
+	PlayerClass.DOOMSLAYER:   1.6,
+}
+
+# Per-class FPS weapon sway: [bob_amount, bob_speed, sway_amount, tilt_amount]
+# bob_amount  — vertical oscillation magnitude (subtle=0.02, heavy=0.12)
+# bob_speed   — oscillation frequency (slow=5, twitchy=16)
+# sway_amount — mouse-lag yaw scale (tight=0.5, floaty=3.0)
+# tilt_amount — strafe roll scale   (rigid=1.0, loose=5.0)
+const CLASS_SWAY : Dictionary = {
+	PlayerClass.NONE:         [0.05, 10.0, 1.5, 3.0],
+	PlayerClass.NECROMANCER:  [0.07,  7.0, 2.0, 2.0],  # slow ethereal drift
+	PlayerClass.BERSERKER:    [0.12, 14.0, 1.0, 5.0],  # lurching heavy charge
+	PlayerClass.PALADIN:      [0.03,  9.0, 1.0, 1.5],  # rigid disciplined march
+	PlayerClass.SHADOWBLADE:  [0.04, 13.0, 2.5, 4.0],  # fluid assassin glide
+	PlayerClass.STORMCALLER:  [0.06, 16.0, 3.0, 3.5],  # electric jitter
+	PlayerClass.BLOODMAGE:    [0.08,  8.0, 1.8, 2.5],  # rhythmic pulse
+	PlayerClass.TIMEWEAVER:   [0.02,  6.0, 0.8, 1.0],  # near-still controlled
+	PlayerClass.VOIDWALKER:   [0.09,  5.0, 2.8, 1.5],  # weightless void float
+	PlayerClass.IRONCLAD:     [0.10,  7.0, 0.5, 2.0],  # armored lumbering stomp
+	PlayerClass.PLAGUEMASTER: [0.07, 11.0, 2.2, 4.5],  # uneven nauseating lurch
+	PlayerClass.SOULREAPER:   [0.06,  9.0, 1.5, 3.0],  # reaping stride
+	PlayerClass.WARLOCK:      [0.08, 10.0, 2.0, 3.5],  # dark surging steps
+	PlayerClass.PHOENIX:      [0.05, 12.0, 1.5, 2.5],  # light rising tempo
+	PlayerClass.GRAVEMIND:    [0.11,  6.0, 1.2, 1.8],  # shambling horror crawl
+	PlayerClass.DOOMSLAYER:   [0.09, 15.0, 1.2, 4.0],  # military punchy drive
+}
+
 const CLASS_ABILITY_KEYS : Array = [KEY_1, KEY_2, KEY_3]
 
 var player_class      : PlayerClass = PlayerClass.NONE
@@ -2160,6 +2783,14 @@ func set_player_class(c: PlayerClass) -> void:
 		PlayerClass.DOOMSLAYER:   _class_cd_max = [10.0, 20.0, 90.0,  8.0]
 		_:                        _class_cd_max = [10.0, 20.0, 40.0, 10.0]
 	_show_message("⚔ Class: %s" % CLASS_NAMES[c], Color(1.0, 0.8, 0.1))
+	var _rsm_cls := get_node_or_null("/root/RunSaveManager")
+	if is_instance_valid(_rsm_cls): _rsm_cls.set_player_class(player_id, int(c))
+	var _sw : Array = CLASS_SWAY.get(c, CLASS_SWAY[PlayerClass.NONE])
+	headbob_amount = _sw[0]
+	headbob_speed  = _sw[1]
+	sway_amount    = _sw[2]
+	tilt_amount    = _sw[3]
+	_update_ult_hud()
 
 
 # ============================================================
@@ -2186,6 +2817,11 @@ func _try_class_ability(slot: int) -> void:
 	if slot >= _class_cooldowns.size(): return
 	if _class_cooldowns[slot] > 0.0:
 		_show_message("⏳ %.1fs" % _class_cooldowns[slot], Color(0.6, 0.6, 0.6))
+		return
+	# Check ult charge cost (slot 3 = movement, always 0)
+	var _ability_cost : float = ULT_ABILITY_COSTS[slot] if slot < ULT_ABILITY_COSTS.size() else 0.0
+	if _ability_cost > 0.0 and ult_charge < _ability_cost:
+		_show_message("⚡ Need %.0f%% charge  (%.0f%%)" % [_ability_cost, ult_charge], Color(0.5, 0.4, 0.8))
 		return
 	# Cancel existing targeting if same slot pressed again
 	if _targeting_slot == slot:
@@ -2364,6 +3000,11 @@ func _get_indicator_radius(slot: int) -> float:
 
 
 func _fire_class_ability(slot: int) -> void:
+	# Deduct ult charge cost when the ability actually fires (covers both instant and ground-target paths)
+	var _fire_cost : float = ULT_ABILITY_COSTS[slot] if slot < ULT_ABILITY_COSTS.size() else 0.0
+	if _fire_cost > 0.0:
+		ult_charge = maxf(0.0, ult_charge - _fire_cost)
+		_update_ult_hud()
 	match player_class:
 		PlayerClass.NECROMANCER:  _ability_necromancer(slot)
 		PlayerClass.BERSERKER:    _ability_berserker(slot)
@@ -2398,8 +3039,6 @@ func _class_dash(dist: float, up: float = 0.0, hit_radius: float = 0.0, hit_dmg:
 	velocity.z = fwd.z * dist * 8.0
 	if up > 0.0: velocity.y = up
 	_shield_timer = maxf(_shield_timer, 0.15)  # brief invincibility during dash
-	if is_instance_valid(animation_tree):
-		animation_tree.set(ANIM_JUMP, AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
 	if hit_radius > 0.0:
 		get_tree().create_timer(0.25).timeout.connect(func():
 			for grp in ["zombies", "units", "players", "hive_unit"]:

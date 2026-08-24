@@ -18,8 +18,11 @@ var master_vol : float = 1.0
 var music_vol  : float = 0.8
 var sfx_vol    : float = 1.0
 
-var root           : Control
-var settings_panel : PanelContainer
+var root              : Control
+var _settings_wrapper : PanelContainer
+var settings_panel    : VBoxContainer
+var _help_wrapper     : PanelContainer = null
+var _help_open        : bool           = false
 
 
 func set_enabled(value: bool) -> void:
@@ -84,6 +87,7 @@ func hide_menu() -> void:
 	menu_visible = false
 	root.visible = false
 	_close_settings()
+	_close_help()
 	get_tree().paused = false
 	_restore_mouse()
 
@@ -154,6 +158,7 @@ func _build_ui() -> void:
 
 	_make_button(vb, "▶  RESUME",    C_RED,                    hide_menu)
 	_make_button(vb, "📖  TUTORIAL", Color(0.14, 0.12, 0.03),  _toggle_tutorial)
+	_make_button(vb, "❓  CONTROLS", Color(0.06, 0.16, 0.08),  toggle_help_overlay)
 	_make_button(vb, "⚙  SETTINGS",  Color(0.18, 0.20, 0.26),  _toggle_settings)
 	_make_button(vb, "↩  MAIN MENU", Color(0.14, 0.18, 0.28),  _go_main_menu)
 	_make_button(vb, "✕  QUIT GAME", Color(0.10, 0.11, 0.13),  _quit)
@@ -166,6 +171,7 @@ func _build_ui() -> void:
 	vb.add_child(hint)
 
 	_build_settings_panel()
+	_build_help_panel()
 	print("[PauseMenu] UI built successfully")
 
 
@@ -191,41 +197,41 @@ func _make_button(parent: Control, text: String, bg_color: Color, callback: Call
 
 
 func _build_settings_panel() -> void:
-	settings_panel = PanelContainer.new()
-	settings_panel.name = "SettingsPanel"
-	settings_panel.set_anchors_preset(Control.PRESET_CENTER)
-	settings_panel.offset_left = -220; settings_panel.offset_right  = 220
-	settings_panel.offset_top  = -200; settings_panel.offset_bottom = 200
-	settings_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	settings_panel.process_mode = Node.PROCESS_MODE_ALWAYS
-	settings_panel.visible = false
+	_settings_wrapper = PanelContainer.new()
+	_settings_wrapper.set_anchors_preset(Control.PRESET_CENTER)
+	_settings_wrapper.offset_left = -220; _settings_wrapper.offset_right  = 220
+	_settings_wrapper.offset_top  = -200; _settings_wrapper.offset_bottom = 200
+	_settings_wrapper.mouse_filter = Control.MOUSE_FILTER_STOP
+	_settings_wrapper.process_mode = Node.PROCESS_MODE_ALWAYS
+	_settings_wrapper.visible = false
 	var sbox := StyleBoxFlat.new()
 	sbox.bg_color = Color(0.06, 0.07, 0.10, 0.98)
 	sbox.set_border_width_all(2); sbox.border_color = Color(0.3, 0.5, 0.8)
 	sbox.set_corner_radius_all(8)
 	sbox.content_margin_left = 24; sbox.content_margin_right  = 24
 	sbox.content_margin_top  = 18; sbox.content_margin_bottom = 18
-	settings_panel.add_theme_stylebox_override("panel", sbox)
-	root.add_child(settings_panel)
+	_settings_wrapper.add_theme_stylebox_override("panel", sbox)
+	root.add_child(_settings_wrapper)
 
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 18)
-	settings_panel.add_child(vb)
+	settings_panel = VBoxContainer.new()
+	settings_panel.name = "SettingsPanel"
+	settings_panel.add_theme_constant_override("separation", 18)
+	_settings_wrapper.add_child(settings_panel)
 
 	var header := Label.new()
 	header.text = "SETTINGS"
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	header.add_theme_font_size_override("font_size", 24)
 	header.add_theme_color_override("font_color", C_TEXT)
-	vb.add_child(header)
+	settings_panel.add_child(header)
 
-	vb.add_child(_slider_row("MASTER", master_vol, _on_master_volume_changed))
-	vb.add_child(_slider_row("MUSIC",  music_vol,  _on_music_volume_changed))
-	vb.add_child(_slider_row("SFX",    sfx_vol,    _on_sfx_volume_changed))
+	settings_panel.add_child(_slider_row("MASTER", master_vol, _on_master_volume_changed, "MasterVolumeSlider"))
+	settings_panel.add_child(_slider_row("MUSIC",  music_vol,  _on_music_volume_changed))
+	settings_panel.add_child(_slider_row("SFX",    sfx_vol,    _on_sfx_volume_changed))
 
 	var fs_row := HBoxContainer.new()
 	fs_row.add_theme_constant_override("separation", 12)
-	vb.add_child(fs_row)
+	settings_panel.add_child(fs_row)
 	var fs_lbl := Label.new()
 	fs_lbl.text = "FULLSCREEN"
 	fs_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -241,27 +247,27 @@ func _build_settings_panel() -> void:
 	# ── FPS Boost section ──────────────────────────────────────
 	var fps_sep := HSeparator.new()
 	fps_sep.add_theme_color_override("color", Color(0.2, 0.35, 0.55, 0.5))
-	vb.add_child(fps_sep)
+	settings_panel.add_child(fps_sep)
 
 	var fps_hdr := Label.new()
 	fps_hdr.text = "FPS BOOST"
 	fps_hdr.add_theme_font_size_override("font_size", 13)
 	fps_hdr.add_theme_color_override("font_color", Color(0.4, 0.75, 1.0))
-	vb.add_child(fps_hdr)
+	settings_panel.add_child(fps_hdr)
 
 	# Current preset display
 	_fps_preset_lbl = Label.new()
 	_fps_preset_lbl.add_theme_font_size_override("font_size", 11)
 	_fps_preset_lbl.add_theme_color_override("font_color", Color(0.7, 0.85, 0.6))
 	_fps_preset_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(_fps_preset_lbl)
+	settings_panel.add_child(_fps_preset_lbl)
 	_update_fps_preset_label()
 
 	# Preset buttons row
 	var fps_row := HBoxContainer.new()
 	fps_row.add_theme_constant_override("separation", 6)
 	fps_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_child(fps_row)
+	settings_panel.add_child(fps_row)
 
 	var preset_labels := ["⚡ ULTRA", "🔥 HIGH", "⚖ BALANCED", "✦ OFF"]
 	var preset_colors := [
@@ -287,10 +293,10 @@ func _build_settings_panel() -> void:
 		pb.pressed.connect(func(): _set_fps_preset(_pi))
 		fps_row.add_child(pb)
 
-	_make_button(vb, "← BACK", Color(0.12, 0.14, 0.18), _close_settings).custom_minimum_size.y = 44
+	_make_button(settings_panel, "← BACK", Color(0.12, 0.14, 0.18), _close_settings).custom_minimum_size.y = 44
 
 
-func _slider_row(label: String, initial: float, callback: Callable) -> HBoxContainer:
+func _slider_row(label: String, initial: float, callback: Callable, slider_name: String = "") -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 14)
 	var lbl := Label.new()
@@ -303,6 +309,8 @@ func _slider_row(label: String, initial: float, callback: Callable) -> HBoxConta
 	slider.value = initial
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	slider.process_mode = Node.PROCESS_MODE_ALWAYS
+	if slider_name != "":
+		slider.name = slider_name
 	slider.value_changed.connect(callback)
 	row.add_child(slider)
 	return row
@@ -334,11 +342,121 @@ func _save_volume(key: String, value: float) -> void:
 
 func _toggle_settings() -> void:
 	settings_open = not settings_open
-	if is_instance_valid(settings_panel): settings_panel.visible = settings_open
+	if is_instance_valid(_settings_wrapper): _settings_wrapper.visible = settings_open
 
 func _close_settings() -> void:
 	settings_open = false
-	if is_instance_valid(settings_panel): settings_panel.visible = false
+	if is_instance_valid(_settings_wrapper): _settings_wrapper.visible = false
+
+
+# ── CONTROLS HELP OVERLAY ────────────────────────────────────
+func toggle_help_overlay() -> void:
+	_help_open = not _help_open
+	if is_instance_valid(_help_wrapper): _help_wrapper.visible = _help_open
+
+func _close_help() -> void:
+	_help_open = false
+	if is_instance_valid(_help_wrapper): _help_wrapper.visible = false
+
+
+func _build_help_panel() -> void:
+	_help_wrapper = PanelContainer.new()
+	_help_wrapper.set_anchors_preset(Control.PRESET_CENTER)
+	_help_wrapper.offset_left  = -270; _help_wrapper.offset_right  = 270
+	_help_wrapper.offset_top   = -290; _help_wrapper.offset_bottom = 290
+	_help_wrapper.mouse_filter = Control.MOUSE_FILTER_STOP
+	_help_wrapper.process_mode = Node.PROCESS_MODE_ALWAYS
+	_help_wrapper.visible = false
+	var sbox := StyleBoxFlat.new()
+	sbox.bg_color = Color(0.04, 0.07, 0.04, 0.98)
+	sbox.set_border_width_all(2); sbox.border_color = Color(0.15, 0.55, 0.15)
+	sbox.set_corner_radius_all(8)
+	sbox.content_margin_left = 22; sbox.content_margin_right  = 22
+	sbox.content_margin_top  = 16; sbox.content_margin_bottom = 16
+	_help_wrapper.add_theme_stylebox_override("panel", sbox)
+	root.add_child(_help_wrapper)
+
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 10)
+	_help_wrapper.add_child(outer)
+
+	var hdr := Label.new()
+	hdr.text = "CONTROLS"
+	hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hdr.add_theme_font_size_override("font_size", 22)
+	hdr.add_theme_color_override("font_color", C_TEXT)
+	outer.add_child(hdr)
+
+	var div := HSeparator.new()
+	div.add_theme_color_override("color", Color(0.15, 0.55, 0.15))
+	outer.add_child(div)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	outer.add_child(scroll)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 5)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vb)
+
+	_help_section(vb, "MOVEMENT")
+	_help_row(vb, "Move",            "W A S D",       "Left Stick")
+	_help_row(vb, "Sprint",          "Hold Shift",    "L3")
+	_help_row(vb, "Jump",            "Space",         "A")
+	_help_row(vb, "Dash",            "Tap Shift",     "B")
+	_help_row(vb, "Grapple",         "X",             "—")
+
+	_help_section(vb, "COMBAT")
+	_help_row(vb, "Shoot",           "Left Click",    "R2")
+	_help_row(vb, "Aim",             "Right Click",   "L2")
+	_help_row(vb, "Reload",          "R",             "X btn")
+	_help_row(vb, "Weapon Switch",   "Scroll Wheel",  "D-Pad ←→")
+	_help_row(vb, "Grenade",         "T",             "—")
+
+	_help_section(vb, "CLASS ABILITIES")
+	_help_row(vb, "Ability Slot",    "Q",             "LB")
+	_help_row(vb, "Interact/Ability","E",             "—")
+	_help_row(vb, "Class Skills",    "1 / 2 / 3 / 4", "—")
+	_help_row(vb, "Ultimate",        "V",             "—")
+
+	_help_section(vb, "INTERFACE")
+	_help_row(vb, "Shop",            "Tab",           "Y")
+	_help_row(vb, "Pause / Close",   "Esc",           "Start")
+
+	_make_button(outer, "← BACK", Color(0.08, 0.12, 0.08), _close_help).custom_minimum_size.y = 40
+
+
+func _help_section(parent: VBoxContainer, title: String) -> void:
+	var lbl := Label.new()
+	lbl.text = title
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", Color(0.35, 0.85, 0.35))
+	parent.add_child(lbl)
+
+
+func _help_row(parent: VBoxContainer, action: String, kb: String, pad: String) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	parent.add_child(row)
+	var la := Label.new()
+	la.text = action
+	la.custom_minimum_size.x = 140
+	la.add_theme_font_size_override("font_size", 12)
+	la.add_theme_color_override("font_color", C_DIM)
+	row.add_child(la)
+	var lk := Label.new()
+	lk.text = kb
+	lk.custom_minimum_size.x = 110
+	lk.add_theme_font_size_override("font_size", 12)
+	lk.add_theme_color_override("font_color", C_TEXT)
+	row.add_child(lk)
+	var lp := Label.new()
+	lp.text = pad
+	lp.add_theme_font_size_override("font_size", 12)
+	lp.add_theme_color_override("font_color", Color(0.50, 0.65, 0.80))
+	row.add_child(lp)
 
 
 # ── TUTORIAL ─────────────────────────────────────────────────

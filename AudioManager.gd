@@ -26,6 +26,21 @@ const REF_DISTANCE   : float = 1.0    # distance at which volume_db is exact
 var _pool      : Array[AudioStreamPlayer3D] = []
 var _pool_head : int = 0               # points to the oldest / most-likely-done slot
 
+# ===============================
+# VOICE CAP — per-category limits
+# Prevents horde-peak audio dropout by capping simultaneous voices per SFX
+# category. Tracked by AudioStreamPlayer3D instance ID so re-plays on the
+# same player don't double-count, and cleanup is signal-driven (finished /
+# tree_exiting) rather than timer-based.
+# ===============================
+const VOICE_CAPS : Dictionary = {
+	"zombie_attack"  : 8,
+	"zombie_ability" : 4,
+	"gunshot"        : 6,
+}
+# category -> Dictionary{ player_instance_id -> true }
+var _active_voices : Dictionary = {}
+
 const SFX_BUS_NAME := "SFX"
 var _sfx_bus_idx : int = 0
 
@@ -96,6 +111,42 @@ func get_sfx_volume() -> float:
 
 func set_debug(enabled: bool) -> void:
 	debug_mode = enabled
+
+# ===============================
+# VOICE CAP API
+# ===============================
+# Call before AudioStreamPlayer3D.play() for capped categories.
+# Returns false when the cap is full — caller should skip the play() call.
+# Registers cleanup via one-shot signals; re-playing on the same player
+# (e.g. zombie attacks while previous attack clip is still running) does
+# not consume an additional slot.
+func claim_voice(category: String, player: AudioStreamPlayer3D) -> bool:
+	if not is_instance_valid(player): return false
+	var cap : int = VOICE_CAPS.get(category, 999)
+	if not _active_voices.has(category):
+		_active_voices[category] = {}
+	var cat_set : Dictionary = _active_voices[category]
+	var pid : int = player.get_instance_id()
+	if cat_set.has(pid):
+		return true  # already registered — same player re-attacking, no new slot needed
+	if cat_set.size() >= cap:
+		if debug_mode:
+			push_warning("[AudioManager] voice cap hit: category='%s' cap=%d" % [category, cap])
+		return false
+	cat_set[pid] = true
+	player.finished.connect(
+		func() -> void: _release_voice(category, pid),
+		CONNECT_ONE_SHOT
+	)
+	player.tree_exiting.connect(
+		func() -> void: _release_voice(category, pid),
+		CONNECT_ONE_SHOT
+	)
+	return true
+
+func _release_voice(category: String, pid: int) -> void:
+	if _active_voices.has(category):
+		_active_voices[category].erase(pid)
 
 # ===============================
 # POOL SLOT SELECTION

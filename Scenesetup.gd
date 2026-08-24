@@ -43,7 +43,7 @@ func _try_setup() -> void:
 		print("[SceneSetup] Skipping main menu scene: %s" % path)
 		return
 
-	var gs       := get_node_or_null("/root/GameSettings")
+	var gs       := _get_autoload("GameSettings", false)
 	var gs_ready : bool = is_instance_valid(gs) and int(gs.get("player_count") if "player_count" in gs else 0) > 0
 	var has_ssm  := not get_tree().get_nodes_in_group("splitscreen_manager").is_empty()
 	var has_bases := not get_tree().get_nodes_in_group("bases").is_empty()
@@ -128,7 +128,7 @@ func _setup_bases() -> void:
 	var scene := get_tree().current_scene
 	if not is_instance_valid(scene): return
 
-	var gs        := get_node_or_null("/root/GameSettings")
+	var gs        := _get_autoload("GameSettings")
 	var game_mode : String = gs.game_mode if (is_instance_valid(gs) and "game_mode" in gs) else "original"
 
 	for pair in [["Base", 1], ["Base2", 2], ["base", 1], ["base2", 2],
@@ -179,3 +179,17 @@ func _spawn_base_turrets() -> void:
 			turret.add_to_group("turrets")
 			print("[SceneSetup] Turret team%d at %s" % [
 				tid, str(spawn_pos.snapped(Vector3.ONE))])
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+func _get_autoload(autoload_name: String, required: bool = true) -> Node:
+	var node := get_node_or_null("/root/" + autoload_name)
+	if not is_instance_valid(node):
+		var msg := "[SceneSetup] Autoload '%s' not found at /root/%s" % [autoload_name, autoload_name]
+		if required:
+			push_error(msg)
+		else:
+			push_warning(msg + " — continuing without it")
+	return node

@@ -1,4 +1,12 @@
 # ============================================================
+# ⚠ NOT LIVE IN THE MAIN GAME (2026-07-25) ⚠
+# Only referenced by "main (2).tscn", which is a stale duplicate scene —
+# the game actually boots main.tscn (via MainMenu.tscn), which uses
+# LaneSpawner.gd for all zombie delivery instead. Editing this file has
+# no effect on the real game. Zombies should only ever come from
+# eggs/nests (Egg.gd / HiveCluster.gd) now — this spawner (and its
+# per-lane wave logic) is legacy and should not be wired back in.
+# ============================================================
 # CreepSpawner.gd
 # ============================================================
 # Place one per team per lane. Assign enemy_base and

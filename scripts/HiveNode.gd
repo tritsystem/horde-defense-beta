@@ -1,4 +1,10 @@
 # ============================================================
+# ⚠ NOT LIVE — NOT ATTACHED TO ANY SCENE (2026-07-25) ⚠
+# Superseded by HiveNestManager.gd + HiveCluster.gd, which is what actually
+# places nests/eggs in the live game. Nothing instantiates or preload/loads
+# this script anymore (the one load() of scripts/HiveEgg.gd below it lives
+# in dead code and never runs). Editing this file has no effect on gameplay.
+# ============================================================
 # HiveNode.gd
 # ============================================================
 # Attach to any Node3D in the scene to make it a hive spawner.

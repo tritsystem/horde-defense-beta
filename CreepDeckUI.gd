@@ -27,18 +27,18 @@ const C_BORDER   := Color(0.24, 0.28, 0.38, 1.0)
 const C_SEL_BRD  := Color(0.20, 0.90, 0.40, 1.0)
 
 const CREEP_CATALOGUE: Array = [
-	{"id":"zombie",      "name":"Zombie",      "tier":"base",     "cost":50,  "icon":"🧟", "desc":"Basic melee lane pusher.",     "stats":{"hp":350,  "dmg":15, "spd":4}},
-	{"id":"tank",        "name":"Tank",         "tier":"base",     "cost":150, "icon":"🛡",  "desc":"High HP. Taunts enemies.",    "stats":{"hp":1200, "dmg":20, "spd":2}},
-	{"id":"berserker",   "name":"Berserker",    "tier":"base",     "cost":120, "icon":"⚡", "desc":"Enrages below 40% HP.",        "stats":{"hp":420,  "dmg":27, "spd":5}},
-	{"id":"shaman",      "name":"Shaman",       "tier":"base",     "cost":130, "icon":"💚", "desc":"Heals allies, poisons foes.",  "stats":{"hp":300,  "dmg":10, "spd":3}},
-	{"id":"leaper",      "name":"Leaper",       "tier":"base",     "cost":100, "icon":"🦘", "desc":"Jumps 12m to target.",         "stats":{"hp":245,  "dmg":12, "spd":6}},
-	{"id":"bomber",      "name":"Bomber",       "tier":"advanced", "cost":200, "icon":"💣", "desc":"AoE explosion on death.",      "stats":{"hp":280,  "dmg":45, "spd":4}},
-	{"id":"ghost",       "name":"Ghost",        "tier":"advanced", "cost":180, "icon":"👻", "desc":"Phases through walls.",        "stats":{"hp":210,  "dmg":15, "spd":5}},
-	{"id":"goliath",     "name":"Goliath",      "tier":"advanced", "cost":350, "icon":"🗿", "desc":"Massive juggernaut.",          "stats":{"hp":1750, "dmg":18, "spd":2}},
-	{"id":"assassin",    "name":"Assassin",     "tier":"advanced", "cost":220, "icon":"🗡",  "desc":"Targets players directly.",   "stats":{"hp":280,  "dmg":37, "spd":6}},
-	{"id":"hunter",      "name":"Hunter",       "tier":"advanced", "cost":160, "icon":"🏹", "desc":"Ranged, kites enemies.",       "stats":{"hp":260,  "dmg":22, "spd":5}},
-	{"id":"necromancer", "name":"Necromancer",  "tier":"advanced", "cost":300, "icon":"💀", "desc":"Raises slain enemies.",        "stats":{"hp":320,  "dmg":14, "spd":3}},
-	{"id":"titan",       "name":"Titan",        "tier":"advanced", "cost":500, "icon":"🔥", "desc":"Unstoppable bulldozer.",       "stats":{"hp":1750, "dmg":22, "spd":2}},
+	{"id":"zombie",      "name":"Zombie",      "tier":"base",     "cost":50,  "icon":"🧟", "desc":"Basic melee lane pusher.",     "stats":{"hp":350,  "dmg":15, "spd":4}, "tags":["swarm", "lane"]},
+	{"id":"tank",        "name":"Tank",         "tier":"base",     "cost":150, "icon":"🛡",  "desc":"High HP. Taunts enemies.",    "stats":{"hp":1200, "dmg":20, "spd":2}, "tags":["frontline", "taunt"]},
+	{"id":"berserker",   "name":"Berserker",    "tier":"base",     "cost":120, "icon":"⚡", "desc":"Enrages below 40% HP.",        "stats":{"hp":420,  "dmg":27, "spd":5}, "tags":["dps", "berserk"]},
+	{"id":"shaman",      "name":"Shaman",       "tier":"base",     "cost":130, "icon":"💚", "desc":"Heals allies, poisons foes.",  "stats":{"hp":300,  "dmg":10, "spd":3}, "tags":["support", "heal"]},
+	{"id":"leaper",      "name":"Leaper",       "tier":"base",     "cost":100, "icon":"🦘", "desc":"Jumps 12m to target.",         "stats":{"hp":245,  "dmg":12, "spd":6}, "tags":["flanker", "mobility"]},
+	{"id":"bomber",      "name":"Bomber",       "tier":"advanced", "cost":200, "icon":"💣", "desc":"AoE explosion on death.",      "stats":{"hp":280,  "dmg":45, "spd":4}, "tags":["aoe", "death"]},
+	{"id":"ghost",       "name":"Ghost",        "tier":"advanced", "cost":180, "icon":"👻", "desc":"Phases through walls.",        "stats":{"hp":210,  "dmg":15, "spd":5}, "tags":["stealth", "bypass"]},
+	{"id":"goliath",     "name":"Goliath",      "tier":"advanced", "cost":350, "icon":"🗿", "desc":"Massive juggernaut.",          "stats":{"hp":1750, "dmg":18, "spd":2}, "tags":["frontline", "tank"]},
+	{"id":"assassin",    "name":"Assassin",     "tier":"advanced", "cost":220, "icon":"🗡",  "desc":"Targets players directly.",   "stats":{"hp":280,  "dmg":37, "spd":6}, "tags":["flanker", "dps"]},
+	{"id":"hunter",      "name":"Hunter",       "tier":"advanced", "cost":160, "icon":"🏹", "desc":"Ranged, kites enemies.",       "stats":{"hp":260,  "dmg":22, "spd":5}, "tags":["ranged", "kite"]},
+	{"id":"necromancer", "name":"Necromancer",  "tier":"advanced", "cost":300, "icon":"💀", "desc":"Raises slain enemies.",        "stats":{"hp":320,  "dmg":14, "spd":3}, "tags":["support", "swarm"]},
+	{"id":"titan",       "name":"Titan",        "tier":"advanced", "cost":500, "icon":"🔥", "desc":"Unstoppable bulldozer.",       "stats":{"hp":1750, "dmg":22, "spd":2}, "tags":["frontline", "juggernaut"]},
 ]
 
 # ── INSTANCE STATE ────────────────────────────────────────────
@@ -56,7 +56,8 @@ var _axis_cooldown : float  = 0.0  # seconds until next axis-triggered move
 const AXIS_COOLDOWN_SEC := 0.22
 const AXIS_THRESHOLD    := 0.6
 
-var _ctrl_cursor : ColorRect = null
+var _ctrl_cursor    : ColorRect = null
+var _tutorial_panel : Control  = null
 
 # ── SHARED VOTE STATE (static, reset by P1) ───────────────────
 static var _all_votes       : Dictionary = {}
@@ -108,10 +109,12 @@ func show_for_player(pid: int, _viewport = null) -> void:
 	_total_players = int(ssm.get_player_count()) if is_instance_valid(ssm) and ssm.has_method("get_player_count") else 1
 	_is_solo = _total_players <= 1
 
-	# Always reset shared vote state so stale confirmed_count never blocks a replay
-	_all_votes.clear()
-	_confirmed_count = 0
-	_final_deck      = []
+
+	# Only P1 resets shared state — prevents P2 wiping P1's already-cast vote
+	if pid == 1:
+		_all_votes.clear()
+		_confirmed_count = 0
+		_final_deck      = []
 
 	# Reparent to main viewport so input always reaches this node
 	var root := get_tree().root
@@ -150,6 +153,7 @@ func show_for_player(pid: int, _viewport = null) -> void:
 		_toggle_select(id)
 
 	print("[DeckUI] P%d ready | device=%d | quad=%s | solo=%s" % [pid, _device_id, str(quad), str(_is_solo)])
+	_maybe_show_tutorial()
 
 
 # ── CREEP LOADING ─────────────────────────────────────────────
@@ -160,7 +164,8 @@ func _load_creeps(pid: int) -> void:
 			_all_creeps = dm.get_all_creeps()
 		elif dm.has_method("get_unlocked_creeps"):
 			_all_creeps = dm.get_unlocked_creeps(pid)
-	if _all_creeps.is_empty():
+		# DM present but returned empty → genuine "no unlocked creeps" state; propagate it
+	else:
 		_all_creeps = CREEP_CATALOGUE.duplicate()
 
 
@@ -244,6 +249,20 @@ func _build_ui() -> void:
 		var card := _make_card(creep)
 		flow.add_child(card)
 		_card_panels.append(card)
+
+	# Empty-state: no unlocked creeps yet
+	if _all_creeps.is_empty():
+		var empty_lbl := Label.new()
+		empty_lbl.name                  = "EmptyStateLabel"
+		empty_lbl.text                  = "No creeps unlocked yet.\nProgress through the game to unlock creep types."
+		empty_lbl.autowrap_mode         = TextServer.AUTOWRAP_WORD
+		empty_lbl.horizontal_alignment  = HORIZONTAL_ALIGNMENT_CENTER
+		empty_lbl.vertical_alignment    = VERTICAL_ALIGNMENT_CENTER
+		empty_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		empty_lbl.size_flags_vertical   = Control.SIZE_EXPAND_FILL
+		empty_lbl.add_theme_font_size_override("font_size", 14)
+		empty_lbl.add_theme_color_override("font_color", C_DIM)
+		flow.add_child(empty_lbl)
 
 	# ── Controller cursor overlay ─────────────────────────────
 	if _device_id >= 0:
@@ -361,6 +380,30 @@ func _make_card(creep: Dictionary) -> PanelContainer:
 		sl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vb.add_child(sl)
 
+	# Synergy-tag badges
+	var tags : Array = creep.get("tags", [])
+	if not tags.is_empty():
+		var tag_flow := HFlowContainer.new()
+		tag_flow.add_theme_constant_override("h_separation", 3)
+		tag_flow.add_theme_constant_override("v_separation", 2)
+		vb.add_child(tag_flow)
+		for tag in tags:
+			var pill := PanelContainer.new()
+			var pill_style := StyleBoxFlat.new()
+			pill_style.bg_color = _tag_badge_color(tag)
+			pill_style.set_corner_radius_all(3)
+			pill_style.content_margin_left   = 3
+			pill_style.content_margin_right  = 3
+			pill_style.content_margin_top    = 1
+			pill_style.content_margin_bottom = 1
+			pill.add_theme_stylebox_override("panel", pill_style)
+			var pill_lbl := Label.new()
+			pill_lbl.text = tag
+			pill_lbl.add_theme_font_size_override("font_size", 7)
+			pill_lbl.add_theme_color_override("font_color", Color(0.95, 0.95, 0.97))
+			pill.add_child(pill_lbl)
+			tag_flow.add_child(pill)
+
 	# Cost
 	var cost := Label.new()
 	cost.text = "%d 🪙" % creep.get("cost", 0)
@@ -401,13 +444,27 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventJoypadButton or event is InputEventJoypadMotion):
 		return
 
-	# Guard: only accept input from this player's gamepad
-	if event.device != _device_id:
+	# Guard: only accept input from this player's gamepad.
+	# If _device_id is unresolved (-99), retry and accept any pad.
+	if _device_id == -99:
+		_device_id = _resolve_device(_player_id)
+	if _device_id >= 0 and event.device != _device_id:
+		return
+	# KBM player (_device_id == -1) should not handle gamepad events
+	if _device_id == -1:
 		return
 
 	if event is InputEventJoypadButton:
 		var je := event as InputEventJoypadButton
 		if not je.pressed:
+			return
+
+		# While the first-run tutorial overlay is visible, eat all pad input and
+		# dismiss on A or Start so the player can proceed.
+		if is_instance_valid(_tutorial_panel):
+			if je.button_index == JOY_BUTTON_A or je.button_index == JOY_BUTTON_START:
+				_dismiss_tutorial()
+			get_viewport().set_input_as_handled()
 			return
 
 		match je.button_index:
@@ -559,7 +616,12 @@ func _refresh_card_visuals() -> void:
 func _refresh_count() -> void:
 	var lbl := find_child("CountLbl", true, false) as Label
 	if is_instance_valid(lbl):
-		lbl.text = "%d / %d selected" % [_selected.size(), DECK_SIZE]
+		if _all_creeps.is_empty():
+			lbl.text = "No creeps unlocked yet"
+			lbl.add_theme_color_override("font_color", C_DIM)
+		else:
+			lbl.text = "%d / %d selected" % [_selected.size(), DECK_SIZE]
+			lbl.add_theme_color_override("font_color", C_GREEN)
 	var btn := find_child("ConfirmBtn", true, false) as Button
 	if is_instance_valid(btn):
 		btn.disabled = _selected.is_empty()
@@ -648,6 +710,110 @@ func _finish(deck: Array) -> void:
 	)
 
 
+# ── FIRST-RUN TUTORIAL OVERLAY ────────────────────────────────
+func _maybe_show_tutorial() -> void:
+	var dm := _get_dm()
+	if not is_instance_valid(dm):
+		return
+	if dm.get("deck_ui_tutorial_seen") == true:
+		return
+	dm.save_tutorial_seen()  # sets the flag and writes user://creep_deck_prefs.cfg
+	_build_tutorial_overlay()
+
+
+func _build_tutorial_overlay() -> void:
+	var overlay := ColorRect.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.color        = Color(0.0, 0.0, 0.0, 0.86)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.z_index      = 200
+	add_child(overlay)
+	_tutorial_panel = overlay
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_PASS
+	overlay.add_child(center)
+
+	var card := PanelContainer.new()
+	card.custom_minimum_size = Vector2(360, 0)
+	var sbox := StyleBoxFlat.new()
+	sbox.bg_color     = Color(0.04, 0.06, 0.11, 0.98)
+	sbox.border_color = Color(0.95, 0.80, 0.20, 0.9)
+	sbox.set_border_width_all(2)
+	sbox.set_corner_radius_all(8)
+	sbox.content_margin_left   = 22
+	sbox.content_margin_right  = 22
+	sbox.content_margin_top    = 18
+	sbox.content_margin_bottom = 18
+	card.add_theme_stylebox_override("panel", sbox)
+	center.add_child(card)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	card.add_child(vb)
+
+	var title_lbl := Label.new()
+	title_lbl.text = "🧟  DECK BUILDER"
+	title_lbl.add_theme_font_size_override("font_size", 20)
+	title_lbl.add_theme_color_override("font_color", Color(0.95, 0.80, 0.20))
+	title_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(title_lbl)
+
+	var sep := HSeparator.new()
+	vb.add_child(sep)
+
+	var lines: Array = [
+		"You command the horde — pick 5 creep types.",
+		"These are the monsters you spend currency to",
+		"spawn each wave. Mix roles for best results:",
+		"",
+		"🛡 Tank      — soaks damage, taunts defences",
+		"💚 Shaman   — heals nearby allies mid-wave",
+		"⚡ Berserker — glass cannon, enrages when low",
+		"👻 Ghost     — phases through walls & towers",
+		"💣 Bomber   — detonates on death for area damage",
+		"",
+		"Cheaper creeps = more volume per wave.",
+		"Pricier creeps = rarer but nastier threats.",
+		"You can change your deck between rounds.",
+	]
+	for line in lines:
+		var lbl := Label.new()
+		lbl.text          = line
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
+		lbl.add_theme_font_size_override("font_size", 11)
+		lbl.add_theme_color_override("font_color", Color(0.82, 0.85, 0.90))
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		vb.add_child(lbl)
+
+	var sep2 := HSeparator.new()
+	vb.add_child(sep2)
+
+	var btn := Button.new()
+	btn.text                  = "Got it!  ▶"
+	btn.add_theme_font_size_override("font_size", 14)
+	btn.custom_minimum_size   = Vector2(160, 44)
+	btn.focus_mode            = Control.FOCUS_NONE
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	btn.pressed.connect(func(): _dismiss_tutorial())
+	vb.add_child(btn)
+
+	if _device_id >= 0:
+		var ctrl_hint := Label.new()
+		ctrl_hint.text = "[A] or [START] to continue"
+		ctrl_hint.add_theme_font_size_override("font_size", 9)
+		ctrl_hint.add_theme_color_override("font_color", Color(0.5, 0.7, 1.0))
+		ctrl_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		vb.add_child(ctrl_hint)
+
+
+func _dismiss_tutorial() -> void:
+	if is_instance_valid(_tutorial_panel):
+		_tutorial_panel.queue_free()
+		_tutorial_panel = null
+
+
 # ── HELPERS ───────────────────────────────────────────────────
 func _resolve_device(pid: int) -> int:
 	var ssm := _get_ssm()
@@ -674,3 +840,20 @@ func _player_color(pid: int) -> Color:
 		3: return Color(0.30, 0.60, 1.00)
 		4: return Color(0.90, 0.25, 0.80)
 		_: return Color(0.85, 0.85, 0.85)
+
+
+func _tag_badge_color(tag: String) -> Color:
+	match tag:
+		"dps", "berserk":                  return Color(0.65, 0.18, 0.10, 0.90)
+		"aoe":                             return Color(0.55, 0.15, 0.45, 0.90)
+		"death":                           return Color(0.40, 0.08, 0.40, 0.90)
+		"support", "heal", "aura":         return Color(0.10, 0.38, 0.18, 0.90)
+		"swarm":                           return Color(0.08, 0.30, 0.42, 0.90)
+		"stealth", "bypass", "drain":      return Color(0.28, 0.10, 0.50, 0.90)
+		"flanker", "mobility":             return Color(0.08, 0.34, 0.50, 0.90)
+		"frontline", "tank", "taunt":      return Color(0.12, 0.20, 0.48, 0.90)
+		"juggernaut":                      return Color(0.38, 0.10, 0.10, 0.90)
+		"ranged", "kite":                  return Color(0.10, 0.25, 0.48, 0.90)
+		"poison", "debuff":                return Color(0.22, 0.35, 0.10, 0.90)
+		"lane":                            return Color(0.12, 0.28, 0.38, 0.90)
+		_:                                 return Color(0.18, 0.20, 0.26, 0.90)

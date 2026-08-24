@@ -1,10 +1,8 @@
 # ============================================================
 # CorruptionManager.gd — AUTOLOAD
 # ============================================================
-# Spawns corruption zones that damage players over time.
-# Purifier beacons (capture points) neutralize nearby zones.
-#
-# Register as Autoload: CorruptionManager
+# Spawns large corruption zones on every hive cluster and egg.
+# Players deploy purifier beacons manually (key P, 45s CD).
 # ============================================================
 extends Node
 
@@ -12,26 +10,34 @@ signal zone_spawned(position: Vector3)
 signal zone_purified(position: Vector3)
 signal beacon_captured(position: Vector3)
 
-const ZONE_DAMAGE_PER_SEC : float = 8.0
-const ZONE_RADIUS         : float = 12.0
-const BEACON_PURIFY_RADIUS: float = 18.0
-const CAPTURE_TIME        : float = 6.0
-const SPAWN_INTERVAL      : float = 90.0   # new zone every 90s
-const MAX_ZONES           : int   = 4
+const ZONE_DAMAGE_PER_SEC : float = 10.0
+const ZONE_RADIUS         : float = 35.0   # large — covers whole nest area
+const BEACON_PURIFY_RADIUS: float = 40.0
+const CAPTURE_TIME        : float = 3.0    # 3s stand time to activate
 
-var _zones   : Array = []   # Array[Node3D]
-var _beacons : Array = []   # Array[Dictionary] {node, pos, progress, team}
-var _spawn_timer : float = 45.0  # first zone after 45s
-var _active  : bool = false
+var _zones   : Array = []
+var _beacons : Array = []
+var _active  : bool  = false
 
 
 func _ready() -> void:
 	add_to_group("corruption_manager")
+	set_process(false)
 
 
 func start() -> void:
 	_active = true
 	set_process(true)
+	# Spawn zones on all existing hives and eggs
+	await get_tree().process_frame
+	for hive in get_tree().get_nodes_in_group("hive_clusters"):
+		if is_instance_valid(hive) and hive is Node3D:
+			_spawn_zone((hive as Node3D).global_position)
+	for egg in get_tree().get_nodes_in_group("eggs"):
+		if is_instance_valid(egg) and egg is Node3D:
+			_spawn_zone_on_egg(egg as Node3D)
+	# Connect to future hive/egg spawns
+	get_tree().node_added.connect(_on_node_added)
 
 
 func stop() -> void:
@@ -39,72 +45,86 @@ func stop() -> void:
 	set_process(false)
 
 
+func _on_node_added(node: Node) -> void:
+	if not _active: return
+	if node.is_in_group("hive_clusters") and node is Node3D:
+		await get_tree().process_frame
+		_spawn_zone((node as Node3D).global_position)
+	elif node.is_in_group("eggs") and node is Node3D:
+		await get_tree().process_frame
+		_spawn_zone_on_egg(node as Node3D)
+
+
 func _process(delta: float) -> void:
 	if not _active: return
-	_spawn_timer -= delta
-	if _spawn_timer <= 0.0 and _zones.size() < MAX_ZONES:
-		_spawn_timer = SPAWN_INTERVAL
-		_spawn_zone()
-
 	_tick_zones(delta)
 	_tick_beacons(delta)
 
 
-func _spawn_zone() -> void:
-	# Pick a random position away from bases
+func _spawn_zone(pos: Vector3) -> void:
 	var scene := get_tree().current_scene
 	if not is_instance_valid(scene): return
-	var rx := randf_range(-60.0, 60.0)
-	var rz := randf_range(-60.0, 60.0)
-	var pos := Vector3(rx, 0.3, rz)
 
 	var zone := Node3D.new()
 	zone.global_position = pos
 	zone.add_to_group("corruption_zone")
 	zone.set_meta("radius", ZONE_RADIUS)
-	zone.set_meta("damage_ps", ZONE_DAMAGE_PER_SEC)
 	zone.set_meta("purified", false)
 
-	# Visual — dark purple sphere
+	# Visual — large dark cylinder on ground
 	var mi   := MeshInstance3D.new()
 	var mesh := CylinderMesh.new()
 	mesh.top_radius    = ZONE_RADIUS
 	mesh.bottom_radius = ZONE_RADIUS
-	mesh.height        = 0.25
+	mesh.height        = 0.3
 	mi.mesh = mesh
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color     = Color(0.35, 0.0, 0.55, 0.45)
+	mat.albedo_color     = Color(0.30, 0.0, 0.45, 0.35)
 	mat.transparency     = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.emission_enabled = true
-	mat.emission         = Color(0.4, 0.0, 0.6) * 0.5
+	mat.emission         = Color(0.5, 0.0, 0.7) * 0.4
 	mat.shading_mode     = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test    = true   # prevents z-fighting when zones overlap
 	mi.material_override = mat
+	# Slight Y offset per zone count so layers don't overlap exactly
+	mi.position.y = 0.05 + _zones.size() * 0.01
 	zone.add_child(mi)
 
-	# Label
 	var lbl := Label3D.new()
-	lbl.text = "☠ CORRUPTED"
-	lbl.font_size = 22
-	lbl.modulate = Color(0.8, 0.3, 1.0)
-	lbl.position.y = 1.2
+	lbl.text      = "☠ CORRUPTED — Deploy Purifier [P]"
+	lbl.font_size = 20
+	lbl.modulate  = Color(0.8, 0.3, 1.0)
+	lbl.position.y = 2.0
 	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	zone.add_child(lbl)
 
 	scene.add_child(zone)
 	_zones.append(zone)
 	zone_spawned.emit(pos)
-
-	# Announce
 	for hud in get_tree().get_nodes_in_group("hud"):
 		if hud.has_method("show_message"):
-			hud.show_message("☠ Corruption zone appeared! Find a purifier beacon.", Color(0.7, 0.2, 1.0))
-
-	# Also spawn a nearby purifier beacon
-	_spawn_beacon(pos + Vector3(randf_range(20.0, 30.0), 0.0, randf_range(-10.0, 10.0)))
-	print("[CorruptionManager] Zone spawned at %s" % str(pos.snapped(Vector3.ONE)))
+			hud.show_message("☠ Corruption zone! Deploy purifier [P]", Color(0.7, 0.2, 1.0))
+	print("[CorruptionManager] Zone spawned at %s (r=%.0f)" % [str(pos.snapped(Vector3.ONE)), ZONE_RADIUS])
 
 
-func _spawn_beacon(pos: Vector3) -> void:
+func _spawn_zone_on_egg(egg: Node3D) -> void:
+	_spawn_zone(egg.global_position)
+	# Remove zone when egg is destroyed
+	if egg.has_signal("egg_destroyed"):
+		egg.egg_destroyed.connect(func(_e): _remove_zone_near(egg.global_position), CONNECT_ONE_SHOT)
+	elif egg.has_signal("hatched"):
+		egg.hatched.connect(func(_e): _remove_zone_near(egg.global_position), CONNECT_ONE_SHOT)
+
+
+func _remove_zone_near(pos: Vector3) -> void:
+	for zone in _zones:
+		if not is_instance_valid(zone): continue
+		if zone.global_position.distance_to(pos) < 5.0:
+			zone.queue_free()
+
+
+# ── Called by player when they deploy a purifier beacon ──────
+func deploy_beacon(pos: Vector3) -> void:
 	var scene := get_tree().current_scene
 	if not is_instance_valid(scene): return
 
@@ -114,74 +134,93 @@ func _spawn_beacon(pos: Vector3) -> void:
 
 	var mi   := MeshInstance3D.new()
 	var mesh := CylinderMesh.new()
-	mesh.top_radius = 0.4; mesh.bottom_radius = 0.5; mesh.height = 2.2
+	mesh.top_radius = 0.4; mesh.bottom_radius = 0.5; mesh.height = 2.4
 	mi.mesh = mesh
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color     = Color(0.1, 0.6, 1.0)
 	mat.emission_enabled = true
-	mat.emission         = Color(0.1, 0.6, 1.0) * 0.8
+	mat.emission         = Color(0.1, 0.6, 1.0) * 1.2
 	mi.material_override = mat
 	beacon_node.add_child(mi)
 
 	var lbl := Label3D.new()
-	lbl.text = "⬟ PURIFIER"
-	lbl.font_size = 20
-	lbl.modulate = Color(0.4, 0.9, 1.0)
-	lbl.position.y = 2.8
+	lbl.text = "⬟ PURIFIER\nStand nearby…"
+	lbl.font_size = 18; lbl.position.y = 3.0
 	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.modulate = Color(0.4, 0.9, 1.0)
 	beacon_node.add_child(lbl)
 
 	scene.add_child(beacon_node)
-	_beacons.append({"node": beacon_node, "pos": pos, "progress": 0.0, "active": false})
+	_beacons.append({"node": beacon_node, "pos": pos, "progress": 0.0, "lbl": lbl})
+	for hud in get_tree().get_nodes_in_group("hud"):
+		if hud.has_method("show_message"):
+			hud.show_message("⬟ Purifier deployed — stand on it to activate!", Color(0.4, 0.9, 1.0))
 
 
 func _tick_zones(delta: float) -> void:
+	# Collect which players are inside any zone — damage each player once only
+	var damaged_players : Array = []
 	for zone in _zones:
 		if not is_instance_valid(zone): continue
 		if bool(zone.get_meta("purified", false)): continue
-		# Damage any player inside the zone
+		var zone3d := zone as Node3D
+		if not is_instance_valid(zone3d): continue
 		for player in get_tree().get_nodes_in_group("players"):
 			if not is_instance_valid(player): continue
+			if player in damaged_players: continue
 			if player is Node3D:
-				var dist := zone.global_position.distance_to((player as Node3D).global_position)
-				if dist < ZONE_RADIUS:
-					if player.has_method("take_damage"):
-						player.take_damage(ZONE_DAMAGE_PER_SEC * delta)
+				var dist : float = zone3d.global_position.distance_to((player as Node3D).global_position)
+				if dist < ZONE_RADIUS and player.has_method("take_damage"):
+					player.take_damage(ZONE_DAMAGE_PER_SEC * delta)
+					damaged_players.append(player)
 
 
 func _tick_beacons(delta: float) -> void:
+	var to_remove : Array = []
 	for bdata in _beacons:
-		var bnode : Node3D = bdata["node"]
-		if not is_instance_valid(bnode): continue
-		# Check if any player is near beacon
+		var bnode : Node3D = bdata.get("node") as Node3D
+		if not is_instance_valid(bnode):
+			to_remove.append(bdata)
+			continue
 		var near_player := false
 		for player in get_tree().get_nodes_in_group("players"):
 			if player is Node3D:
-				if bnode.global_position.distance_to((player as Node3D).global_position) < 4.0:
+				if bnode.global_position.distance_to((player as Node3D).global_position) < 5.0:
 					near_player = true; break
+		var lbl : Label3D = bdata.get("lbl") as Label3D
 		if near_player:
-			bdata["progress"] += delta
-			if bdata["progress"] >= CAPTURE_TIME:
-				_purify_nearby_zones(bnode.global_position)
-				beacon_captured.emit(bnode.global_position)
+			bdata["progress"] = minf(float(bdata["progress"]) + delta, CAPTURE_TIME)
+			var pct : float = float(bdata["progress"]) / CAPTURE_TIME
+			if is_instance_valid(lbl):
+				lbl.text = "⬟ PURIFIER\n%.0f%%" % (pct * 100.0)
+			if float(bdata["progress"]) >= CAPTURE_TIME:
+				var captured_pos : Vector3 = bnode.global_position
+				_purify_nearby_zones(captured_pos)
+				beacon_captured.emit(captured_pos)
 				for hud in get_tree().get_nodes_in_group("hud"):
-					if hud.has_method("show_message"): hud.show_message("✅ Purifier activated!", Color(0.4, 1.0, 0.6))
+					if hud.has_method("show_message"):
+						hud.show_message("✅ Zone purified!", Color(0.4, 1.0, 0.6))
 				bnode.queue_free()
+				to_remove.append(bdata)
 		else:
-			bdata["progress"] = maxf(0.0, bdata["progress"] - delta * 0.5)
+			bdata["progress"] = maxf(0.0, float(bdata["progress"]) - delta * 0.4)
+			if is_instance_valid(lbl): lbl.text = "⬟ PURIFIER\nStand nearby…"
+	for entry in to_remove:
+		_beacons.erase(entry)
 
 
-func _purify_nearby_zones(beacon_pos: Vector3) -> void:
+func _purify_nearby_zones(_beacon_pos: Vector3) -> void:
+	# Purify ALL active zones on the map
 	for zone in _zones:
 		if not is_instance_valid(zone): continue
-		if zone.global_position.distance_to(beacon_pos) < BEACON_PURIFY_RADIUS:
-			zone.set_meta("purified", true)
-			zone_purified.emit(zone.global_position)
-			# Fade out visual
-			var mi := zone.get_child(0) if zone.get_child_count() > 0 else null
-			if is_instance_valid(mi) and mi is MeshInstance3D:
-				var tw := get_tree().create_tween()
-				tw.tween_property(mi, "modulate:a", 0.0, 1.5)
-				tw.tween_callback(zone.queue_free)
-			else:
-				get_tree().create_timer(1.5).timeout.connect(zone.queue_free)
+		if bool(zone.get_meta("purified", false)): continue
+		zone.set_meta("purified", true)
+		zone_purified.emit(zone.global_position)
+		var mi : Node = zone.get_child(0) if zone.get_child_count() > 0 else null
+		if is_instance_valid(mi) and mi is MeshInstance3D:
+			var tw := get_tree().create_tween()
+			tw.tween_property(mi, "modulate:a", 0.0, 1.5)
+			tw.tween_callback(zone.queue_free)
+		else:
+			get_tree().create_timer(1.5).timeout.connect(zone.queue_free)
+	_zones.clear()

@@ -260,6 +260,15 @@ class StateCombat extends State:
 		_ctrl.round_started.emit(_ctrl._current_round)
 		_ctrl.show_phase_label.emit("ROUND %d  BEGINS" % _ctrl._current_round, true)
 		print("⚔️  COMBAT START — Round %d" % _ctrl._current_round)
+		# Start corruption zones + weekly mutation on first round
+		if _ctrl._current_round == 1:
+			var cm := _ctrl.get_tree().get_first_node_in_group("corruption_manager")
+			if is_instance_valid(cm) and cm.has_method("start"): cm.start()
+			var mm := _ctrl.get_tree().get_first_node_in_group("mutation_manager")
+			if is_instance_valid(mm) and mm.has_method("apply_to_game"): mm.apply_to_game()
+			var rm := _ctrl.get_tree().get_first_node_in_group("revive_manager")
+			if is_instance_valid(rm) and rm.has_method("reset"): rm.reset()
+			_ctrl._spawn_starting_turrets()
 
 	func tick(delta: float) -> void:
 		_combat_timer += delta
@@ -336,6 +345,7 @@ var _waves_this_round  : int  = 0
 var _hordes_per_wave   : int  = 0
 var _player_deploy_wave: int  = 1
 var _player_chose      : bool = false
+var _slo_mo_guard      : bool = false
 
 # ── Hive tier system ──────────────────────────────────────────
 # Only T1 hives spawn until all T1 are destroyed.
@@ -369,6 +379,10 @@ func _ready() -> void:
 	_build_hsm()
 	get_tree().paused = false
 	Engine.time_scale  = 1.0
+	if Engine.has_singleton("ZombieHordeManager"):
+		var _zhm : Object = Engine.get_singleton("ZombieHordeManager")
+		if _zhm.has_signal("zombie_died"):
+			_zhm.zombie_died.connect(_on_any_zombie_died)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	Input.flush_buffered_events()
 	await get_tree().process_frame
@@ -473,7 +487,8 @@ func _launch_wave(wave_num: int) -> void:
 	if is_boss_round and wave_num == _waves_this_round:
 		_spawn_boss_unit(2)
 
-	wave_launched.emit(_current_round, wave_num, size)
+	wave_launched.emit(_current_round, wave_num, size)   # triggers HUD 3-2-1-GO countdown
+	await get_tree().create_timer(3.0, true, false, true).timeout   # hold until GO!
 	_spawn_horde(2, size)
 	_deploy_player_units_for_wave(wave_num)
 
@@ -716,6 +731,21 @@ func _is_map_cleared() -> bool:
 		return false
 
 	return true
+
+
+func _on_any_zombie_died(_pos: Vector3) -> void:
+	if _slo_mo_guard: return
+	if get_current_phase() != "combat": return
+	if _current_wave < 1: return
+	if not _is_map_cleared(): return
+	_slo_mo_guard = true
+	_fire_wave_clear_slo_mo()
+
+func _fire_wave_clear_slo_mo() -> void:
+	Engine.time_scale = 0.25
+	await get_tree().create_timer(0.18, true, false, true).timeout
+	Engine.time_scale = 1.0
+	_slo_mo_guard = false
 
 
 func _end_game(winner: int = 1) -> void:
@@ -1223,6 +1253,43 @@ func _reset_legacy_spawners() -> void:
 		var zhm = Engine.get_singleton("ZombieHordeManager")
 		if zhm.has_method("reset_for_new_scene"):
 			zhm.reset_for_new_scene()
+
+
+func _spawn_starting_turrets() -> void:
+	var scene_path := "res://scenes/fire_turret.tscn"
+	if not ResourceLoader.exists(scene_path): return
+	var packed : PackedScene = load(scene_path)
+	if not is_instance_valid(packed): return
+	# Find team 1 base to place turrets around it
+	var base : Node3D = null
+	for b in get_tree().get_nodes_in_group("bases"):
+		if "team_id" in b and int(b.get("team_id")) == 1 and b is Node3D:
+			base = b as Node3D; break
+	if not is_instance_valid(base): return
+	var fwd := Vector3(0, 0, 1)
+	var right := Vector3(1, 0, 0)
+	# 4 turrets in a defensive arc in front of base
+	var offsets := [
+		right * 8.0  + fwd * 10.0,
+		-right * 8.0 + fwd * 10.0,
+		right * 14.0 + fwd * 6.0,
+		-right * 14.0 + fwd * 6.0,
+	]
+	var space := get_tree().root.get_world_3d().direct_space_state
+	for off in offsets:
+		var t := packed.instantiate()
+		var spawn : Vector3 = base.global_position + (off as Vector3)
+		# Raycast to ground
+		if is_instance_valid(space):
+			var ray := PhysicsRayQueryParameters3D.create(Vector3(spawn.x, 200.0, spawn.z), Vector3(spawn.x, -50.0, spawn.z))
+			ray.collision_mask = 1
+			var hit := space.intersect_ray(ray)
+			if not hit.is_empty(): spawn.y = hit.position.y + 0.1
+		get_tree().current_scene.add_child(t)
+		if t is Node3D: (t as Node3D).global_position = spawn
+		if "team_id" in t: t.set("team_id", 1)
+		t.add_to_group("starting_turret")
+	print("[GamePhase] Spawned 4 starting turrets near base")
 
 
 func _disable_legacy_spawners() -> void:

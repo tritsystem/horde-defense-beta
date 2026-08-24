@@ -42,9 +42,12 @@ var ready_wrap        : Control
 var ready_button      : Button
 var gamepad_ready_btn : Button
 var crosshair         : Label
-var _hurt_flash       : ColorRect
-var _flash_tween      : Tween
-var _timer_tween      : Tween
+var _hurt_flash           : ColorRect
+var _flash_tween          : Tween
+var _timer_tween          : Tween
+var _low_health_vignette  : ColorRect = null
+var _vignette_tween       : Tween     = null
+var _vignette_pulsing     : bool      = false
 
 # Ability slots (3 panels bottom center)
 var _ability_panels   : Array[Control]     = []
@@ -58,6 +61,9 @@ var _class_ab_cdlbls  : Array[Label]       = []
 var _class_ab_cdbars  : Array[ProgressBar] = []
 var _class_ab_namelbs : Array[Label]       = []
 var _class_ab_desclbs : Array[Label]       = []   # cached desc label refs
+var _class_ab_overlays     : Array[Control]   = []
+var _class_ab_overlay_lbls : Array[Label]     = []
+var _class_ab_sweep_rects  : Array[ColorRect] = []
 var _last_player_class : int               = -1   # dirty check for name/desc update
 var _class_ability_bar : HBoxContainer     = null  # shared bar for class + trinket slots
 var _minimap_draw     : Control            = null
@@ -130,6 +136,7 @@ var _crystal_lbl    : Label      = null
 var _quest_panel    : Control    = null
 var _wave_choice_panel : Control = null
 var _round_card        : Control = null
+var _card_popup_queue  : Array   = []
 var _quest_rows     : Dictionary = {}
 var _grapple_ui     : Control    = null
 var _turret_hover   : Control    = null   # floating upgrade panel above turret
@@ -139,11 +146,19 @@ var _minimap_dots   : Dictionary = {}
 var _crystal_flash  : ColorRect  = null
 var _hs_label       : Label      = null
 var _death_timer_lbl: Label   = null
+var _wave_countdown_overlay : Control = null
+var _wave_countdown_lbl     : Label   = null
+var _deck_overlay           : Control = null
+var _deck_card_labels       : Array   = []
 
 const ENEMY_INTERVAL   := 0.5
 const HEALTH_INTERVAL  := 0.1
 const AMMO_INTERVAL    := 0.1
 const ABILITY_INTERVAL := 0.20   # 5fps ability bar refresh (was 20fps)
+
+const _VIGNETTE_THRESHOLD    : float = 0.30   # HP% where vignette starts
+const _VIGNETTE_MAX_STRENGTH : float = 0.72   # shader strength at 0 HP
+const _VIGNETTE_PULSE_HP     : float = 0.20   # HP% where vignette begins pulsing
 
 # ── THEME ────────────────────────────────────────────────────
 const C_DIM     := Color(0.45, 0.47, 0.50, 1.0)
@@ -247,6 +262,7 @@ func bind_player(p: Node) -> void:
 	if is_instance_valid(tt) and tt.has_signal("tree_updated"):
 		if not tt.tree_updated.is_connected(_on_tree_updated):
 			tt.tree_updated.connect(_on_tree_updated)
+	_refresh_deck_overlay()
 	print("[HUD] P%s bound | team=%d | kbm=%s" % [
 		str(p.get("player_id") if "player_id" in p else "?"), team_id, str(_is_kbm)])
 
@@ -287,6 +303,7 @@ func set_topdown_mode(is_topdown: bool) -> void:
 	if is_instance_valid(_sel_highlight_lbl):
 		_sel_highlight_lbl.visible = false
 	if is_topdown: _exit_sel_mode()
+	# Minimap stays visible regardless of topdown/shop state (see _build_minimap).
 
 
 func set_shop_open(open: bool) -> void:
@@ -301,11 +318,18 @@ func set_shop_open(open: bool) -> void:
 		else:
 			_minimap.modulate = Color(1, 1, 1, 1.0)
 			_minimap.z_index   = 110
+	# HUD root stays IGNORE — shop UI manages its own mouse_filter
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Raise shop panel above all 3D content when open
+	if is_instance_valid(get_parent()) and get_parent() is CanvasLayer:
+		(get_parent() as CanvasLayer).layer = 50 if open else 10
 	if is_instance_valid(ready_wrap): ready_wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if is_instance_valid(ready_button): ready_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if is_instance_valid(gamepad_ready_btn): gamepad_ready_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if is_instance_valid(_squad_panel):
 		_squad_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE if open else Control.MOUSE_FILTER_STOP
+	# Hide revive counter during gameplay; show only in shop
+	if is_instance_valid(_revive_lbl): _revive_lbl.visible = open
 	# Exit selection mode when shop opens
 	if open: _exit_sel_mode()
 
@@ -579,6 +603,9 @@ func _build_ui() -> void:
 	_build_bottom_bar()
 	_build_squad_panel()
 	_build_hurt_flash()
+	_build_low_health_vignette()
+	_build_wave_countdown()
+	_build_deck_overlay()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -927,6 +954,7 @@ func _build_bottom_bar() -> void:
 	_build_hitmarker()
 	_build_crystal_hud()
 	_build_combat_hud()
+	_build_ult_button()
 	_build_grapple_ui()
 	_build_minimap()
 	_build_kill_feed()
@@ -1097,6 +1125,156 @@ func flash_ability(slot: int) -> void:
 	tw.tween_property(_ability_flash, "color", Color(sc.r, sc.g, sc.b, 0.0), 0.4)
 
 
+# ─────────────────────────────────────────────────────────────
+# DECK OVERLAY — compact strip top-right, always visible mid-wave
+# ─────────────────────────────────────────────────────────────
+func _build_deck_overlay() -> void:
+	var frame := PanelContainer.new()
+	frame.name          = "DeckOverlay"
+	frame.anchor_left   = 0.55;  frame.anchor_right  = 0.995
+	frame.anchor_top    = 0.0;   frame.anchor_bottom = 0.0
+	frame.offset_top    = 38;    frame.offset_bottom = 60
+	frame.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+	frame.z_index       = 15
+	var sty := StyleBoxFlat.new()
+	sty.bg_color = Color(0.04, 0.05, 0.09, 0.82)
+	sty.set_corner_radius_all(4)
+	sty.set_border_width_all(1)
+	sty.border_color = Color(0.22, 0.26, 0.36, 0.8)
+	sty.content_margin_left  = 5; sty.content_margin_right  = 5
+	sty.content_margin_top   = 2; sty.content_margin_bottom = 2
+	frame.add_theme_stylebox_override("panel", sty)
+	add_child(frame)
+	_deck_overlay = frame
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 5)
+	row.alignment    = BoxContainer.ALIGNMENT_CENTER
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.add_child(row)
+
+	var hdr := Label.new()
+	hdr.text = "DECK"
+	hdr.add_theme_font_size_override("font_size", 8)
+	hdr.add_theme_color_override("font_color", Color(0.42, 0.46, 0.56))
+	hdr.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hdr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(hdr)
+
+	_deck_card_labels.clear()
+	for _i in 5:
+		var sep := Label.new()
+		sep.text = "·"
+		sep.add_theme_font_size_override("font_size", 8)
+		sep.add_theme_color_override("font_color", Color(0.26, 0.28, 0.34))
+		sep.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		sep.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(sep)
+
+		var lbl := Label.new()
+		lbl.text = "—"
+		lbl.add_theme_font_size_override("font_size", 9)
+		lbl.add_theme_color_override("font_color", Color(0.50, 0.52, 0.58))
+		lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(lbl)
+		_deck_card_labels.append(lbl)
+
+
+func _refresh_deck_overlay() -> void:
+	if not is_instance_valid(_deck_overlay): return
+	var pid : int = int(player.get("player_id")) if is_instance_valid(player) and "player_id" in player else 1
+	var cdm := get_node_or_null("/root/CreepDeckManager")
+	if not is_instance_valid(cdm) or not cdm.has_method("get_player_deck"): return
+	var deck : Array = cdm.get_player_deck(pid)
+	for i in _deck_card_labels.size():
+		var lbl : Label = _deck_card_labels[i] as Label
+		if not is_instance_valid(lbl): continue
+		if i < deck.size():
+			var cid : String = deck[i]
+			var def : Dictionary = cdm.get_creep_def(cid) if cdm.has_method("get_creep_def") else {}
+			var icon : String = def.get("icon", "◈")
+			var cost : int = def.get("cost", 0)
+			var is_adv : bool = def.get("tier", "base") != "base"
+			lbl.text = "%s %dg" % [icon, cost]
+			lbl.add_theme_color_override("font_color",
+				Color(1.0, 0.75, 0.40) if is_adv else Color(0.72, 0.90, 0.62))
+		else:
+			lbl.text = "—"
+			lbl.add_theme_color_override("font_color", Color(0.38, 0.40, 0.46))
+
+
+func _build_wave_countdown() -> void:
+	_wave_countdown_overlay = Control.new()
+	_wave_countdown_overlay.set_anchors_preset(Control.PRESET_CENTER)
+	_wave_countdown_overlay.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_wave_countdown_overlay.grow_vertical   = Control.GROW_DIRECTION_BOTH
+	# REAL BUG FIX (2026-07-25): "the 321 countdown is too big and covers the
+	# whole screen" -- 220x150 box with a 96px font, popping in from 1.6x
+	# scale, read as dominating the view during actual gameplay. Shrunk well
+	# down and moved off dead-center so it doesn't block the player's view of
+	# the action while it counts down.
+	_wave_countdown_overlay.custom_minimum_size = Vector2(120, 84)
+	_wave_countdown_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_wave_countdown_overlay.z_index = 300
+	_wave_countdown_overlay.visible = false
+	_wave_countdown_overlay.offset_top -= 160.0   # shift up from dead-center
+	add_child(_wave_countdown_overlay)
+
+	var bg := PanelContainer.new()
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var bg_sty := StyleBoxFlat.new()
+	bg_sty.bg_color = Color(0.04, 0.04, 0.06, 0.78)
+	bg_sty.set_corner_radius_all(10)
+	bg.add_theme_stylebox_override("panel", bg_sty)
+	_wave_countdown_overlay.add_child(bg)
+
+	_wave_countdown_lbl = Label.new()
+	_wave_countdown_lbl.text = "3"
+	_wave_countdown_lbl.add_theme_font_size_override("font_size", 48)
+	_wave_countdown_lbl.add_theme_color_override("font_color", Color(1.0, 0.55, 0.10))
+	_wave_countdown_lbl.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_wave_countdown_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_wave_countdown_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	_wave_countdown_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_wave_countdown_overlay.add_child(_wave_countdown_lbl)
+
+
+func _show_wave_countdown(wave_num: int, horde_size: int) -> void:
+	if not is_instance_valid(_wave_countdown_lbl): return
+	_wave_countdown_overlay.visible  = true
+	_wave_countdown_overlay.modulate = Color.WHITE
+
+	var digits : Array[String] = ["3", "2", "1", "GO!"]
+	var colors : Array[Color]  = [
+		Color(1.0, 0.55, 0.10),
+		Color(1.0, 0.55, 0.10),
+		Color(0.95, 0.25, 0.10),
+		Color(0.20, 1.00, 0.45),
+	]
+	for i in digits.size():
+		_wave_countdown_lbl.text = digits[i]
+		_wave_countdown_lbl.add_theme_color_override("font_color", colors[i])
+		_wave_countdown_lbl.scale     = Vector2(1.6, 1.6)
+		_wave_countdown_lbl.modulate.a = 0.0
+		var pop : Tween = create_tween()
+		pop.set_parallel(true)
+		pop.tween_property(_wave_countdown_lbl, "scale",      Vector2(1.0, 1.0), 0.25)
+		pop.tween_property(_wave_countdown_lbl, "modulate:a", 1.0,               0.20)
+		if i < digits.size() - 1:
+			await get_tree().create_timer(1.0, true, false, true).timeout
+		else:
+			show_message("⚔ Wave %d — %d enemies incoming!" % [wave_num, horde_size],
+				Color(1.0, 0.5, 0.2))
+			await get_tree().create_timer(0.6, true, false, true).timeout
+			var fade : Tween = _wave_countdown_overlay.create_tween()
+			fade.tween_property(_wave_countdown_overlay, "modulate:a", 0.0, 0.4)
+			await fade.finished
+	_wave_countdown_overlay.visible  = false
+	_wave_countdown_overlay.modulate = Color.WHITE
+
+
 func _build_hitmarker() -> void:
 	# Use a CenterContainer anchored to full rect so children sit at screen center
 	_hitmarker = Control.new()
@@ -1146,22 +1324,154 @@ func _build_hitmarker() -> void:
 	_hitmarker.add_child(_hs_label)
 
 
+# ── Message queue — stacked feed, newest at bottom ───────────
+var _active_msgs : Array = []   # Array of Label nodes currently displayed
+const MAX_MSGS   : int   = 5
+const MSG_SPACING: float = 32.0
+
 func show_message(text: String, color: Color = Color.WHITE) -> void:
+	# Deduplicate — skip if same text is already showing
+	for existing in _active_msgs:
+		if is_instance_valid(existing) and existing.text == text: return
+
+	# Cap — remove oldest if full
+	while _active_msgs.size() >= MAX_MSGS:
+		var oldest : Node = _active_msgs.pop_front()
+		if is_instance_valid(oldest): oldest.queue_free()
+
+	# Shift existing messages upward to make room
+	# REAL BUG FIX (2026-07-25): "narration overlaps, make them glide up" --
+	# this shift was already intended to do exactly that, but two real bugs
+	# defeated it: (1) tw2 wasn't parallel, so offset_top and offset_bottom
+	# animated one after another instead of together, stretching each label
+	# and taking 2x as long (0.3s) to actually reach its new slot; (2) every
+	# new message created ANOTHER shift tween on the same still-shifting
+	# labels with no reference to the previous one, so during any burst of
+	# messages faster than ~0.3s apart (very normal in combat -- wave
+	# announcements, quest progress, streaks, revives can all fire close
+	# together) multiple tweens fought over the same offset properties every
+	# frame, which reads as messages jittering/overlapping instead of
+	# smoothly gliding. Kill any in-flight shift tween before starting a new
+	# one, and make top+bottom move together.
+	for i in _active_msgs.size():
+		var m : Node = _active_msgs[i]
+		if not is_instance_valid(m): continue
+		if m.has_meta("_shift_tween"):
+			var old_tw : Tween = m.get_meta("_shift_tween")
+			if is_instance_valid(old_tw): old_tw.kill()
+		var tw2 := m.create_tween().set_parallel(true)
+		tw2.tween_property(m, "offset_top",    m.offset_top    - MSG_SPACING, 0.15)
+		tw2.tween_property(m, "offset_bottom", m.offset_bottom - MSG_SPACING, 0.15)
+		m.set_meta("_shift_tween", tw2)
+
+	# Create new message at the bottom slot
+	var slot : int = _active_msgs.size()
+	var base_top : float = -80.0 - slot * MSG_SPACING
+
 	var lbl := Label.new()
 	lbl.text = text
-	lbl.add_theme_font_size_override("font_size", 22)
+	lbl.add_theme_font_size_override("font_size", 20)
 	lbl.add_theme_color_override("font_color", color)
 	lbl.set_anchors_preset(Control.PRESET_CENTER)
-	lbl.offset_left = -320; lbl.offset_right = 320
-	lbl.offset_top  = -60;  lbl.offset_bottom = -20
+	lbl.offset_left   = -320; lbl.offset_right  = 320
+	lbl.offset_top    = base_top; lbl.offset_bottom = base_top + 26
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.z_index = 500
+	lbl.z_index    = 50
+	lbl.modulate.a = 0.0
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(lbl)
-	var tw := create_tween().set_parallel(true)
-	tw.tween_property(lbl, "position:y", lbl.position.y - 40, 1.8).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
-	tw.tween_property(lbl, "modulate:a", 0.0, 1.8).set_delay(1.0)
-	tw.chain().tween_callback(lbl.queue_free)
+	_active_msgs.append(lbl)
+
+	# Fade in, hold, fade out
+	var tw := lbl.create_tween().set_parallel(true)
+	tw.tween_property(lbl, "modulate:a", 1.0, 0.2)
+	tw.chain().tween_interval(2.4)
+	tw.chain().tween_property(lbl, "modulate:a", 0.0, 0.6)
+	tw.chain().tween_callback(func():
+		_active_msgs.erase(lbl)
+		if is_instance_valid(lbl): lbl.queue_free())
+
+
+func _on_card_acquired(pid: int, creep_id: String) -> void:
+	var my_pid : int = int(player.get("player_id")) if is_instance_valid(player) and "player_id" in player else 0
+	if pid != my_pid: return
+	show_card_acquired(creep_id)
+	_refresh_deck_overlay()
+
+
+func show_card_acquired(creep_id: String) -> void:
+	var cdm := get_node_or_null("/root/CreepDeckManager")
+	var def : Dictionary = {}
+	if is_instance_valid(cdm): def = cdm.get_creep_def(creep_id)
+	var icon_text : String = def.get("icon", "🃏")
+	var card_name : String = def.get("name", creep_id.capitalize())
+
+	var panel := PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sty := StyleBoxFlat.new()
+	sty.bg_color = Color(0.04, 0.10, 0.06, 0.92)
+	sty.set_border_width_all(2)
+	sty.border_color = Color(0.20, 0.85, 0.40)
+	sty.set_corner_radius_all(6)
+	sty.content_margin_left = 10; sty.content_margin_right  = 10
+	sty.content_margin_top  = 8;  sty.content_margin_bottom = 8
+	panel.add_theme_stylebox_override("panel", sty)
+	panel.z_index = 160
+
+	var stack_offset := float(_card_popup_queue.size()) * -72.0
+	panel.anchor_left   = 0.78; panel.anchor_right  = 0.78
+	panel.anchor_top    = 0.50; panel.anchor_bottom = 0.50
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical   = Control.GROW_DIRECTION_BOTH
+	panel.offset_left   = -60.0; panel.offset_right  = 60.0
+	panel.offset_top    = -30.0 + stack_offset
+	panel.offset_bottom =  30.0 + stack_offset
+	panel.modulate.a    = 0.0
+	add_child(panel)
+	_card_popup_queue.append(panel)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 2)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(col)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(row)
+
+	var icon_lbl := Label.new()
+	icon_lbl.text = icon_text
+	icon_lbl.add_theme_font_size_override("font_size", 28)
+	icon_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(icon_lbl)
+
+	var plus_lbl := Label.new()
+	plus_lbl.text = "+CARD"
+	plus_lbl.add_theme_font_size_override("font_size", 11)
+	plus_lbl.add_theme_color_override("font_color", Color(0.30, 1.0, 0.50))
+	plus_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	plus_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(plus_lbl)
+
+	var name_lbl := Label.new()
+	name_lbl.text = card_name
+	name_lbl.add_theme_font_size_override("font_size", 12)
+	name_lbl.add_theme_color_override("font_color", Color(0.88, 0.92, 0.88))
+	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(name_lbl)
+
+	var float_dist := 64.0
+	var tw := panel.create_tween()
+	tw.tween_property(panel, "modulate:a", 1.0, 0.2)
+	tw.tween_property(panel, "offset_top",    panel.offset_top    - float_dist, 2.0).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(panel, "offset_bottom", panel.offset_bottom - float_dist, 2.0).set_ease(Tween.EASE_OUT)
+	tw.tween_property(panel, "modulate:a", 0.0, 0.5)
+	tw.tween_callback(func():
+		_card_popup_queue.erase(panel)
+		if is_instance_valid(panel): panel.queue_free())
 
 
 func show_hitmarker(headshot: bool = false) -> void:
@@ -1228,25 +1538,6 @@ func _build_combat_hud() -> void:
 	_sword_bar.add_child(sword_lbl)
 	add_child(_sword_bar)
 
-	# Ultimate charge bar — bottom right above ammo
-	_ult_bar = ProgressBar.new()
-	_ult_bar.min_value = 0; _ult_bar.max_value = 100; _ult_bar.value = 0
-	_ult_bar.anchor_left = 0.82; _ult_bar.anchor_right = 1.0
-	_ult_bar.anchor_top  = 1.0;  _ult_bar.anchor_bottom = 1.0
-	_ult_bar.offset_top  = -68;  _ult_bar.offset_bottom = -52
-	_ult_bar.offset_left = 0;    _ult_bar.offset_right  = -8
-	_ult_bar.add_theme_color_override("font_color", Color(1.0, 0.5, 0.1))
-	_ult_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_ult_bar.z_index = 200
-	var ult_lbl := Label.new()
-	ult_lbl.text = "ULT"; ult_lbl.add_theme_font_size_override("font_size", 9)
-	ult_lbl.add_theme_color_override("font_color", Color(1.0, 0.5, 0.1))
-	ult_lbl.set_anchors_preset(Control.PRESET_CENTER_LEFT)
-	ult_lbl.offset_top = -4; ult_lbl.offset_bottom = 4; ult_lbl.offset_left = 2
-	ult_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_ult_bar.add_child(ult_lbl)
-	add_child(_ult_bar)
-
 	# Revive counter top-right under gold
 	_revive_lbl = Label.new()
 	_revive_lbl.text = "💀 Revives: 5"
@@ -1259,6 +1550,7 @@ func _build_combat_hud() -> void:
 	_revive_lbl.offset_right = -8
 	_revive_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_revive_lbl.z_index = 200
+	_revive_lbl.visible = false   # only shown inside shop
 	add_child(_revive_lbl)
 
 
@@ -1271,13 +1563,132 @@ func update_sword_charge(charge: float, max_charge: float) -> void:
 	_sword_bar.add_theme_color_override("font_color", col)
 
 
-func update_ult_charge(charge: float, max_charge: float) -> void:
-	if not is_instance_valid(_ult_bar): return
-	_ult_bar.max_value = max_charge
-	_ult_bar.value     = charge
-	if charge >= max_charge:
-		_ult_bar.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
-		show_message("⚡ ULTIMATE READY!", Color(1.0, 0.8, 0.1))
+var _ult_button     : Control = null
+var _ult_charge_bar : ProgressBar = null
+var _ult_ready_lbl  : Label = null
+var _ult_name_lbl   : Label = null
+var _ult_was_ready  : bool  = false
+
+func _build_ult_button() -> void:
+	# Large standalone ULT button — center-bottom, just above the ability bar
+	var root := Control.new()
+	root.anchor_left   = 0.5
+	root.anchor_right  = 0.5
+	root.anchor_top    = 1.0
+	root.anchor_bottom = 1.0
+	root.offset_left   = -52
+	root.offset_right  =  52
+	root.offset_top    = -148
+	root.offset_bottom = -94
+	root.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+	root.z_index       = 50   # below shop
+	add_child(root)
+	_ult_button = root
+
+	# Background panel
+	var bg := PanelContainer.new()
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.04, 0.12, 0.92)
+	sb.border_color = Color(0.5, 0.2, 0.9)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(5)
+	bg.add_theme_stylebox_override("panel", sb)
+	root.add_child(bg)
+
+	var vb := VBoxContainer.new()
+	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 2)
+	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg.add_child(vb)
+
+	# Per-class ult name label (updated via update_ult_charge)
+	_ult_name_lbl = Label.new()
+	_ult_name_lbl.text = "⚡ ULTIMATE  [V]"
+	_ult_name_lbl.add_theme_font_size_override("font_size", 10)
+	_ult_name_lbl.add_theme_color_override("font_color", Color(0.75, 0.5, 1.0))
+	_ult_name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ult_name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_ult_name_lbl)
+
+	# Charge bar
+	_ult_charge_bar = ProgressBar.new()
+	_ult_charge_bar.min_value = 0
+	_ult_charge_bar.max_value = 100
+	_ult_charge_bar.value     = 0
+	_ult_charge_bar.show_percentage = false
+	_ult_charge_bar.custom_minimum_size = Vector2(0, 7)
+	var fill_s := StyleBoxFlat.new()
+	fill_s.bg_color = Color(0.6, 0.2, 1.0)
+	fill_s.set_corner_radius_all(3)
+	var bg_s := StyleBoxFlat.new()
+	bg_s.bg_color = Color(0.1, 0.05, 0.18)
+	_ult_charge_bar.add_theme_stylebox_override("fill", fill_s)
+	_ult_charge_bar.add_theme_stylebox_override("background", bg_s)
+	_ult_charge_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_ult_charge_bar)
+
+	# "READY" / charge % label
+	_ult_ready_lbl = Label.new()
+	_ult_ready_lbl.text = "0%"
+	_ult_ready_lbl.add_theme_font_size_override("font_size", 10)
+	_ult_ready_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.7))
+	_ult_ready_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ult_ready_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_ult_ready_lbl)
+
+
+func update_ult_charge(charge: float, max_charge: float, ult_name: String = "") -> void:
+	if is_instance_valid(_ult_name_lbl) and ult_name != "":
+		_ult_name_lbl.text = "⚡ %s  [V]" % ult_name
+	# Update dedicated ult button
+	var pct := int(clampf(charge / maxf(max_charge, 1.0) * 100.0, 0.0, 100.0))
+	if is_instance_valid(_ult_charge_bar):
+		_ult_charge_bar.max_value = max_charge
+		_ult_charge_bar.value     = charge
+		# Pulse border when ready
+		var sb := StyleBoxFlat.new()
+		sb.set_corner_radius_all(3)
+		if charge >= max_charge:
+			sb.bg_color = Color(1.0, 0.85, 0.1)
+		else:
+			sb.bg_color = Color(0.6, 0.2, 1.0)
+		_ult_charge_bar.add_theme_stylebox_override("fill", sb)
+
+	if is_instance_valid(_ult_ready_lbl):
+		if charge >= max_charge:
+			_ult_ready_lbl.text = "READY!"
+			_ult_ready_lbl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.1))
+		else:
+			_ult_ready_lbl.text = "%d%%" % pct
+			_ult_ready_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.7))
+
+	if is_instance_valid(_ult_button):
+		if charge >= max_charge:
+			# Glow border yellow when ready
+			var panel := _ult_button.get_child(0) if _ult_button.get_child_count() > 0 else null
+			if is_instance_valid(panel) and panel is PanelContainer:
+				var s := StyleBoxFlat.new()
+				s.bg_color = Color(0.10, 0.07, 0.04, 0.95)
+				s.border_color = Color(1.0, 0.85, 0.1)
+				s.set_border_width_all(3)
+				s.set_corner_radius_all(5)
+				(panel as PanelContainer).add_theme_stylebox_override("panel", s)
+			if not _ult_was_ready:
+				_ult_was_ready = true
+				show_message("⚡ ULTIMATE READY! Press [V]", Color(1.0, 0.8, 0.1))
+		else:
+			_ult_was_ready = false
+			var panel := _ult_button.get_child(0) if _ult_button.get_child_count() > 0 else null
+			if is_instance_valid(panel) and panel is PanelContainer:
+				var s := StyleBoxFlat.new()
+				s.bg_color = Color(0.06, 0.04, 0.12, 0.92)
+				s.border_color = Color(0.5, 0.2, 0.9)
+				s.set_border_width_all(2)
+				s.set_corner_radius_all(5)
+				(panel as PanelContainer).add_theme_stylebox_override("panel", s)
 
 
 func update_revive_count(n: int) -> void:
@@ -1431,30 +1842,20 @@ func _update_minimap() -> void:
 	# ── NEW: fill the _MinimapNode cache so _draw() doesn't need get_nodes_in_group ──
 	if is_instance_valid(_minimap_draw):
 		var mn := _minimap_draw as _MinimapNode
-		# Find local player
-		var lp : Node3D = null
-		var my_tid : int = 1
-		for p in get_tree().get_nodes_in_group("players"):
-			if not is_instance_valid(p): continue
-			if p.get("is_local_player") == true or (p.has_method("is_local") and p.is_local()):
-				lp = p as Node3D; break
+
+		# Use the HUD's own bound player — never global pl[0] which breaks P2 minimap.
+		# If no player is bound yet, fall back to first in group.
+		var lp : Node3D = player as Node3D if (is_instance_valid(player) and player is Node3D) else null
 		if lp == null:
 			var pl := get_tree().get_nodes_in_group("players")
 			if pl.size() > 0: lp = pl[0] as Node3D
+
+		var my_tid : int = 1
 		if is_instance_valid(lp):
 			mn.mm_player_pos = lp.global_position
 			my_tid = int(lp.get("team_id") if "team_id" in lp else 1)
 			mn.mm_player_tid = my_tid
-			# Yaw: prefer Camera3D child
-			var cam : Camera3D = null
-			for ch in lp.get_children():
-				if ch is Camera3D: cam = ch as Camera3D; break
-				for sub in ch.get_children():
-					if sub is Camera3D: cam = sub as Camera3D; break
-			# Use player body rotation.y — the CharacterBody3D always rotates
-			# around Y for horizontal look in both FPS and top-down modes.
-			# Camera euler can give garbage values when the camera is steeply
-			# pitched (top-down), so we read the body directly.
+			# Use player body rotation.y — always correct in FPS and top-down modes.
 			if "rotation" in lp:
 				mn.mm_player_yaw = (lp as Node3D).rotation.y
 			# Fill bases
@@ -1463,19 +1864,39 @@ func _update_minimap() -> void:
 				if not (b is Node3D) or not is_instance_valid(b): continue
 				var bt : int = int(b.get("team_id") if "team_id" in b else 0)
 				mn.mm_bases.append({"pos": (b as Node3D).global_position, "friendly": bt == my_tid})
-			# Fill units (cap at 80 to keep draw fast)
+
+			# Fill units — scan players and non-zombie units separately from zombies.
+			# The old single scan with an 80-cap would fill up with bases/turrets/allies
+			# before reaching zombie entries, making enemies invisible on the map.
 			mn.mm_units.clear()
-			var count := 0
+
+			# Players (always shown regardless of cap)
+			for p in get_tree().get_nodes_in_group("players"):
+				if not is_instance_valid(p) or p == lp: continue
+				var ut : int = int(p.get("team_id") if "team_id" in p else 0)
+				mn.mm_units.append({"pos": (p as Node3D).global_position,
+					"friendly": ut == my_tid, "is_player": true})
+
+			# Non-zombie units (turrets, minions, etc.) — capped at 40
+			var unit_count := 0
 			for u in get_tree().get_nodes_in_group("units"):
 				if not is_instance_valid(u) or u == lp: continue
-				if count >= 80: break
+				if u.is_in_group("zombies") or u.is_in_group("players"): continue
+				if unit_count >= 40: break
 				var ut : int = int(u.get("team_id") if "team_id" in u else 0)
-				mn.mm_units.append({
-					"pos":       (u as Node3D).global_position,
-					"friendly":  ut == my_tid,
-					"is_player": u.is_in_group("players")
-				})
-				count += 1
+				mn.mm_units.append({"pos": (u as Node3D).global_position,
+					"friendly": ut == my_tid, "is_player": false})
+				unit_count += 1
+
+			# Active Z1 zombies — scan "zombies" group directly, capped at 150
+			var zcount := 0
+			for z in get_tree().get_nodes_in_group("zombies"):
+				if not is_instance_valid(z): continue
+				if zcount >= 150: break
+				var zt : int = int(z.get("team_id") if "team_id" in z else 2)
+				mn.mm_units.append({"pos": (z as Node3D).global_position,
+					"friendly": zt == my_tid, "is_player": false})
+				zcount += 1
 
 			# Fill hive units (egg-spawned enemies — always red)
 			mn.mm_hive_units.clear()
@@ -1502,95 +1923,43 @@ func _update_minimap() -> void:
 				if not is_instance_valid(eg) or not (eg is Node3D): continue
 				mn.mm_eggs.append({"pos": (eg as Node3D).global_position})
 
+			# Fill crowd zombie dots (Z2+Z3 — unloaded but shown on minimap)
+			mn.mm_crowd_zombies.clear()
+			if Engine.has_singleton("ZombieHordeManager"):
+				var _zhm = Engine.get_singleton("ZombieHordeManager")
+				if _zhm.has_method("get_crowd_positions"):
+					for _zp in _zhm.get_crowd_positions(200):
+						mn.mm_crowd_zombies.append(_zp)
+
+			# Density cluster map — 15-unit grid cells, built every 0.5s for heat-dot overlay
+			mn.mm_clusters.clear()
+			if Engine.has_singleton("ZombieHordeManager"):
+				var _zhm_c = Engine.get_singleton("ZombieHordeManager")
+				var cg : Dictionary = {}
+				var csz : float = 15.0
+				var enemy_tid : int = 2 if my_tid == 1 else 1
+				for ze in _zhm_c.get_z1_active_by_team(enemy_tid):
+					if not is_instance_valid(ze): continue
+					var zp3 : Vector3 = (ze as Node3D).global_position
+					var ck := Vector2i(int(zp3.x / csz), int(zp3.z / csz))
+					cg[ck] = int(cg.get(ck, 0)) + 1
+				if _zhm_c.has_method("get_crowd_positions"):
+					for zp3 in _zhm_c.get_crowd_positions(500):
+						var ck := Vector2i(int(zp3.x / csz), int(zp3.z / csz))
+						cg[ck] = int(cg.get(ck, 0)) + 1
+				for ck in cg.keys():
+					var cnt : int = int(cg.get(ck, 0))
+					if cnt < 1: continue
+					var wx : float = (float(ck.x) + 0.5) * csz
+					var wz : float = (float(ck.y) + 0.5) * csz
+					mn.mm_clusters.append({"pos": Vector3(wx, 0.0, wz), "count": cnt})
+
 			mn.mm_valid = true
 		else:
 			mn.mm_valid = false
 
-	# ── OLD minimap (dot-based) — kept as no-op guard ───────────────────────
-	if not is_instance_valid(_minimap): return
-	var map_size := _minimap.size
-	if map_size == Vector2.ZERO: return
-
-	# Collect all tracked nodes
-	var tracked : Array = []
-	var bases   : Array = get_tree().get_nodes_in_group("bases")
-	var players : Array = get_tree().get_nodes_in_group("player")
-	var minions : Array = get_tree().get_nodes_in_group("minions")
-	var turrets : Array = get_tree().get_nodes_in_group("turrets")
-
-	# Find world bounds from base positions
-	if bases.is_empty(): return
-	var min_pos := Vector2( 9999,  9999)
-	var max_pos := Vector2(-9999, -9999)
-	for b in bases:
-		if not (b is Node3D): continue
-		var bp := (b as Node3D).global_position
-		min_pos = Vector2(minf(min_pos.x, bp.x - 80), minf(min_pos.y, bp.z - 80))
-		max_pos = Vector2(maxf(max_pos.x, bp.x + 80), maxf(max_pos.y, bp.z + 80))
-	var world_size := max_pos - min_pos
-	if world_size.x < 1 or world_size.y < 1: return
-
-	# Update/create dots
-	var active_ids : Array = []
-
-	# Bases
-	for b in bases:
-		if not (b is Node3D): continue
-		var bp := (b as Node3D).global_position
-		var nid : String = "base_" + str(b.get_instance_id())
-		active_ids.append(nid)
-		var tid : int = int(b.get_meta("team_id", 1))
-		var col : Color = Color(0.3, 0.5, 1.0) if tid == 1 else Color(1.0, 0.3, 0.3)
-		# Z maps directly: higher Z = lower on minimap (north = top, south = bottom)
-		var bmp := Vector2((bp.x - min_pos.x)/world_size.x * map_size.x, (bp.z - min_pos.y)/world_size.y * map_size.y)
-		_set_map_dot(nid, bmp, col, 10)
-		# Team label on minimap
-		_set_map_label("label_" + nid, bmp + Vector2(6, -8), "T%d" % tid, col)
-
-	# Players — draw dot + direction arrow
-	for p in players:
-		if not (p is Node3D): continue
-		var pp   := (p as Node3D).global_position
-		var nid  : String = "player_" + str(p.get_instance_id())
-		var anid : String = "arrow_"  + str(p.get_instance_id())
-		active_ids.append(nid); active_ids.append(anid)
-		var col : Color = Color(0.2, 1.0, 0.4) if "team_id" not in p or int(p.get("team_id")) == 1 else Color(1.0, 0.8, 0.2)
-		var pmp := Vector2((pp.x - min_pos.x)/world_size.x * map_size.x, (pp.z - min_pos.y)/world_size.y * map_size.y)
-		_set_map_dot(nid, pmp, col, 7)
-		# Direction arrow — arrow rect is tall/thin so rotation=0 points UP.
-		# World -Z is north (up on minimap), player faces -Z at rotation.y=0,
-		# so map_angle = rotation.y directly (no offset needed).
-		var prot : float = 0.0
-		if "rotation" in p: prot = float((p as Node3D).rotation.y)
-		_set_map_arrow(anid, pmp, prot, col)
-
-	# Turrets
-	for t in turrets:
-		if not (t is Node3D): continue
-		var tp := (t as Node3D).global_position
-		var nid : String = "turret_" + str(t.get_instance_id())
-		active_ids.append(nid)
-		var tid : int = int(t.get("team_id") if "team_id" in t else 1)
-		var col : Color = Color(0.4, 0.8, 1.0) if tid == 1 else Color(1.0, 0.5, 0.2)
-		var tmp := Vector2((tp.x - min_pos.x)/world_size.x * map_size.x, (tp.z - min_pos.y)/world_size.y * map_size.y)
-		_set_map_dot(nid, tmp, col, 4)
-
-	# Minions — tiny dots, capped at 40
-	for m in minions.slice(0, 40):
-		if not (m is Node3D): continue
-		var mp2 := (m as Node3D).global_position
-		var nid : String = "minion_" + str(m.get_instance_id())
-		active_ids.append(nid)
-		var tid : int = int(m.get("team_id") if "team_id" in m else 1)
-		var col : Color = Color(0.5, 0.5, 1.0, 0.7) if tid == 1 else Color(1.0, 0.4, 0.4, 0.7)
-		var mmp := Vector2((mp2.x - min_pos.x)/world_size.x * map_size.x, (mp2.z - min_pos.y)/world_size.y * map_size.y)
-		_set_map_dot(nid, mmp, col, 2)
-
-	# Remove stale dots
-	for key in _minimap_dots.keys():
-		if key not in active_ids:
-			if is_instance_valid(_minimap_dots[key]): _minimap_dots[key].queue_free()
-			_minimap_dots.erase(key)
+	# ── OLD minimap (dot-based) — superseded by _MinimapNode._draw() ───────────
+	# _minimap now points to the real container; _MinimapNode handles all rendering.
 
 
 func reveal_minimap_area(world_pos: Vector3, radius: float) -> void:
@@ -1982,28 +2351,24 @@ func _hide_death_screen() -> void:
 
 
 # ── Scope visibility helpers — called by SniperScope ────────
+var _scope_hidden_nodes : Array = []   # nodes hidden when scoped
+
 func hide_for_scope() -> void:
-	var ab := find_child("AbilityBar", true, false)
-	if is_instance_valid(ab): ab.visible = false
-	# Squad panel may be sibling in CanvasLayer — hide by ref AND by search
-	if is_instance_valid(_squad_panel): _squad_panel.visible = false
-	var canvas := get_parent()
-	if is_instance_valid(canvas):
-		for ch in canvas.get_children():
-			if "SquadCommandPanel" in ch.name: ch.visible = false
-	var qp := get_node_or_null("QuestPanel")
-	if is_instance_valid(qp): qp.visible = false
+	_scope_hidden_nodes.clear()
+	for ch in get_children():
+		if not (ch is CanvasItem): continue
+		# Never touch squad panel — it has its own visibility rules
+		if is_instance_valid(_squad_panel) and ch == _squad_panel: continue
+		if (ch as CanvasItem).visible:
+			(ch as CanvasItem).visible = false
+			_scope_hidden_nodes.append(ch)
+	if is_instance_valid(crosshair): crosshair.visible = false
 
 func show_for_scope() -> void:
-	var ab := find_child("AbilityBar", true, false)
-	if is_instance_valid(ab): ab.visible = true
-	if is_instance_valid(_squad_panel): _squad_panel.visible = true
-	var canvas := get_parent()
-	if is_instance_valid(canvas):
-		for ch in canvas.get_children():
-			if "SquadCommandPanel" in ch.name: ch.visible = true
-	var qp := get_node_or_null("QuestPanel")
-	if is_instance_valid(qp): qp.visible = true
+	for ch in _scope_hidden_nodes:
+		if is_instance_valid(ch): (ch as CanvasItem).visible = true
+	_scope_hidden_nodes.clear()
+	# Squad panel remains hidden — only shown in topdown mode
 
 
 func _build_squad_panel() -> void:
@@ -2017,8 +2382,10 @@ func _build_squad_panel() -> void:
 	# Position is driven manually every frame by _process() so anchors don't matter.
 	add_child(scp)
 	_squad_panel = scp
-	# Position after node is in tree
+	scp.visible = false
+	# Re-hide after deferred _ready/_build_ui runs
 	call_deferred("_force_squad_panel_position", scp)
+	get_tree().create_timer(0.0).timeout.connect(func(): if is_instance_valid(scp): scp.visible = false)
 	get_tree().create_timer(0.1).timeout.connect(func():
 		if is_instance_valid(scp): _force_squad_panel_position(scp))
 	# Store refs for legacy code that calls _squad_set_status / _refresh_squad_count
@@ -2057,6 +2424,20 @@ func _build_hurt_flash() -> void:
 	_hurt_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hurt_flash.z_index = 200
 	add_child(_hurt_flash)
+
+
+func _build_low_health_vignette() -> void:
+	_low_health_vignette = ColorRect.new()
+	_low_health_vignette.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_low_health_vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_low_health_vignette.z_index = 190   # below hurt flash (200)
+	_low_health_vignette.visible = false
+	var sh := Shader.new()
+	sh.code = "shader_type canvas_item;\nuniform float strength : hint_range(0.0,1.0) = 0.0;\nvoid fragment() {\n\tvec2 uv = UV - vec2(0.5);\n\tfloat v = clamp(pow(length(uv) * 1.8, 2.2), 0.0, 1.0);\n\tCOLOR = vec4(0.35, 0.0, 0.0, v * strength);\n}"
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	_low_health_vignette.material = mat
+	add_child(_low_health_vignette)
 
 
 # ============================================================
@@ -2110,7 +2491,7 @@ func _process(delta: float) -> void:
 		_process_sel_ray(delta)
 	_minimap_timer -= delta
 	if _minimap_timer <= 0.0:
-		_minimap_timer = 0.40   # 2.5fps minimap refresh — no gameplay impact
+		_minimap_timer = 0.5   # 2fps minimap refresh — matches 0.5s heat-dot spec
 		_update_minimap()
 		if is_instance_valid(_minimap_draw): _minimap_draw.queue_redraw()
 	_turret_tick(delta)
@@ -2435,6 +2816,7 @@ func _tick_ability_bars() -> void:
 # ============================================================
 func _on_player_health_changed(cur: float, max_val: float) -> void:
 	if _last_hp > 0.0 and cur < _last_hp: _hurt_flash_trigger()
+	_update_low_health_vignette(cur, max_val)
 	_last_hp = cur; _last_max_hp = max_val
 	if is_instance_valid(hp_bar):
 		hp_bar.max_value = max_val; hp_bar.value = cur
@@ -2456,6 +2838,37 @@ func _hurt_flash_trigger() -> void:
 	_hurt_flash.color = Color(0.75, 0.05, 0.08, 0.45)
 	_flash_tween = create_tween()
 	_flash_tween.tween_property(_hurt_flash, "color:a", 0.0, 0.35)
+
+
+func _update_low_health_vignette(cur: float, max_val: float) -> void:
+	if not is_instance_valid(_low_health_vignette): return
+	var mat := _low_health_vignette.material as ShaderMaterial
+	if not is_instance_valid(mat): return
+	var pct : float = cur / maxf(max_val, 1.0)
+	if pct >= _VIGNETTE_THRESHOLD:
+		_low_health_vignette.visible = false
+		if _vignette_tween and _vignette_tween.is_valid(): _vignette_tween.kill()
+		_vignette_tween = null
+		_vignette_pulsing = false
+		mat.set_shader_parameter("strength", 0.0)
+		return
+	_low_health_vignette.visible = true
+	var base_s : float = (1.0 - pct / _VIGNETTE_THRESHOLD) * _VIGNETTE_MAX_STRENGTH
+	if pct <= _VIGNETTE_PULSE_HP:
+		if not _vignette_pulsing:
+			_vignette_pulsing = true
+			if _vignette_tween and _vignette_tween.is_valid(): _vignette_tween.kill()
+			var lo : float = maxf(base_s - 0.18, 0.0)
+			var hi : float = minf(base_s + 0.18, 1.0)
+			_vignette_tween = create_tween().set_loops()
+			_vignette_tween.tween_method(func(s: float): mat.set_shader_parameter("strength", s), lo, hi, 0.9)
+			_vignette_tween.tween_method(func(s: float): mat.set_shader_parameter("strength", s), hi, lo, 0.9)
+	else:
+		if _vignette_pulsing:
+			_vignette_pulsing = false
+			if _vignette_tween and _vignette_tween.is_valid(): _vignette_tween.kill()
+			_vignette_tween = null
+		mat.set_shader_parameter("strength", base_s)
 
 
 # ============================================================
@@ -2504,6 +2917,14 @@ func _update_crosshair_for_gun(gun: Node) -> void:
 		crosshair.text = "✛"
 		crosshair.add_theme_font_size_override("font_size", 32)
 		crosshair.add_theme_color_override("font_color", Color(0.4, 1.0, 0.65, 0.9))
+	elif "flame" in name_lower or "thrower" in name_lower or "fire" in name_lower:
+		crosshair.text = "🔥"
+		crosshair.add_theme_font_size_override("font_size", 28)
+		crosshair.add_theme_color_override("font_color", Color(1.0, 0.45, 0.1, 0.95))
+	elif "basegun" in name_lower or "base_gun" in name_lower or name_lower == "gun":
+		crosshair.text = "+"
+		crosshair.add_theme_font_size_override("font_size", 30)
+		crosshair.add_theme_color_override("font_color", Color(0.85, 0.95, 1.0, 0.9))
 	elif "smg" in name_lower or "machine" in name_lower or "uzi" in name_lower:
 		crosshair.text = "┼"
 		crosshair.add_theme_font_size_override("font_size", 24)
@@ -2546,6 +2967,7 @@ func _connect_signals() -> void:
 	if is_instance_valid(base): _sig(base, "health_changed", _on_base_health_changed)
 	if is_instance_valid(game_manager):
 		_sig(game_manager, "money_changed",        _on_money_changed)
+		_sig(game_manager, "gold_awarded",         _on_gold_awarded)
 		_sig(game_manager, "prep_time_updated",    _on_prep_time_updated)
 		_sig(game_manager, "ready_updated",        _on_ready_updated)
 		_sig(game_manager, "match_started_signal", _on_match_started)
@@ -2558,6 +2980,10 @@ func _connect_signals() -> void:
 		_sig(game_manager, "round_ended",          _on_round_ended)
 		_sig(game_manager, "game_over",            _on_game_over)
 		_sig(game_manager, "phase_timer_updated",  _on_phase_timer_updated)
+	var _cdm := get_node_or_null("/root/CreepDeckManager")
+	if is_instance_valid(_cdm):
+		_sig(_cdm, "card_acquired", _on_card_acquired)
+		_sig(_cdm, "deck_chosen", func(_pid: int, _deck: Array): _refresh_deck_overlay())
 
 # ── Round / Wave handlers ─────────────────────────────────────
 var _completed_waves  : Array      = []
@@ -2624,12 +3050,14 @@ func _on_round_announced(round_num: int, hordes: int, waves: int, label: String)
 	_show_round_card(round_num, hordes, waves, label)
 
 func _on_wave_choice_open(waves: int, default_wave: int, time_left: float) -> void:
+	# Wave spawning interface is versus-mode only
+	var gs := get_node_or_null("/root/GameSettings")
+	var mode : String = gs.get("game_mode") if is_instance_valid(gs) and "game_mode" in gs else "original"
+	if mode != "versus": return
 	_deploy_wave_num  = default_wave
 	_waves_this_round = waves
-	# Preserve visibility — if player hid it with Shift+Q, keep it hidden after rebuild
 	var _was_visible : bool = is_instance_valid(_wave_choice_panel) and _wave_choice_panel.visible
 	_build_wave_choice_panel(waves, default_wave, time_left)
-	# Only show if it was already visible or this is the first time it's built
 	if is_instance_valid(_wave_choice_panel):
 		_wave_choice_panel.visible = _was_visible
 		_update_wave_tab_icon()
@@ -2642,7 +3070,7 @@ func _on_round_started(_round_num: int) -> void:
 	pass  # panel stays visible during combat
 
 func _on_wave_launched(_round: int, wave_num: int, horde_size: int) -> void:
-	show_message("⚔ Wave %d — %d enemies incoming!" % [wave_num, horde_size], Color(1.0, 0.5, 0.2))
+	_show_wave_countdown(wave_num, horde_size)   # 3-2-1-GO overlay; "incoming!" fires at GO
 	_completed_waves.append(wave_num)
 	if wave_num in _wave_buttons:
 		var btn : Button = _wave_buttons[wave_num]
@@ -2658,91 +3086,8 @@ func _on_round_ended(round_num: int, gold_reward: int) -> void:
 	show_message("Round %d complete  +%d gold" % [round_num, gold_reward], Color(0.9, 0.85, 0.2))
 
 func _on_game_over(winner_team: int) -> void:
-	_build_victory_screen(winner_team)
-
-func _build_victory_screen(winner_team: int) -> void:
-	var is_winner : bool = winner_team == team_id
-	# Full screen overlay
-	var overlay := ColorRect.new()
-	overlay.color = Color(0, 0, 0, 0.0)
-	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
-	overlay.z_index = 500
-	add_child(overlay)
-	# Fade in black
-	var ftw := overlay.create_tween()
-	ftw.tween_property(overlay, "color:a", 0.85, 1.2)
-	# Panel
-	var panel := PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.offset_left = -340; panel.offset_right  = 340
-	panel.offset_top  = -220; panel.offset_bottom = 220
-	panel.z_index = 501
-	var sty := StyleBoxFlat.new()
-	sty.bg_color = Color(0.04, 0.04, 0.08, 0.98)
-	sty.set_corner_radius_all(12)
-	sty.set_border_width_all(3)
-	sty.border_color = Color(0.9, 0.75, 0.1) if is_winner else Color(0.6, 0.1, 0.1)
-	panel.add_theme_stylebox_override("panel", sty)
-	add_child(panel)
-	var vb := VBoxContainer.new()
-	vb.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_theme_constant_override("separation", 18)
-	panel.add_child(vb)
-	# Trophy / skull
-	var icon := Label.new()
-	icon.text = "🏆" if is_winner else "💀"
-	icon.add_theme_font_size_override("font_size", 72)
-	icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(icon)
-	# Result text
-	var result := Label.new()
-	result.text = "VICTORY" if is_winner else "DEFEAT"
-	result.add_theme_font_size_override("font_size", 52)
-	result.add_theme_color_override("font_color",
-		Color(0.95, 0.82, 0.1) if is_winner else Color(0.85, 0.2, 0.2))
-	result.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(result)
-	# Gold info
-	var gold_left : int = 0
-	if is_instance_valid(game_manager) and game_manager.has_method("get_gold"):
-		gold_left = game_manager.get_gold(team_id)
-	var gold_lbl := Label.new()
-	gold_lbl.text = "Gold remaining: %d" % gold_left
-	gold_lbl.add_theme_font_size_override("font_size", 18)
-	gold_lbl.add_theme_color_override("font_color", Color(0.9, 0.85, 0.4))
-	gold_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(gold_lbl)
-	# Countdown to main menu
-	var cd_lbl := Label.new()
-	cd_lbl.text = "Returning to main menu in 8s..."
-	cd_lbl.add_theme_font_size_override("font_size", 13)
-	cd_lbl.add_theme_color_override("font_color", Color(0.5, 0.55, 0.65))
-	cd_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(cd_lbl)
-	# Play victory or defeat music
-	_play_victory_music(is_winner)
-	# Button: main menu immediately
-	var btn := Button.new()
-	btn.text = "MAIN MENU"
-	btn.custom_minimum_size = Vector2(200, 48)
-	btn.add_theme_font_size_override("font_size", 18)
-	btn.focus_mode = Control.FOCUS_NONE
-	btn.pressed.connect(func(): _go_to_main_menu())
-	vb.add_child(btn)
-	# Countdown label update
-	var _cd : float = 8.0
-	var _tick_cd := func(_delta):
-		_cd -= get_process_delta_time()
-		if is_instance_valid(cd_lbl): cd_lbl.text = "Returning to main menu in %ds..." % int(maxf(_cd,0))
-	var _cd_timer := get_tree().create_timer(0.0)
-	_update_victory_countdown(cd_lbl, 8.0)
-
-func _update_victory_countdown(lbl: Label, t: float) -> void:
-	if not is_instance_valid(lbl): return
-	lbl.text = "Returning to main menu in %ds..." % int(maxf(t, 0))
-	if t <= 0.0: _go_to_main_menu(); return
-	get_tree().create_timer(1.0).timeout.connect(func():
-		_update_victory_countdown(lbl, t - 1.0), CONNECT_ONE_SHOT)
+	_play_victory_music(winner_team == team_id)
+	GameOverScreen.show_result(winner_team, team_id)
 
 func _play_victory_music(is_winner: bool) -> void:
 	# Stop all existing music
@@ -3096,6 +3441,15 @@ func _sync_all() -> void:
 		if bmhp > 0.0: _on_base_health_changed(bhp, bmhp)
 	if is_instance_valid(game_manager) and game_manager.has_method("get_gold"):
 		_on_money_changed(team_id, game_manager.get_gold(team_id))
+	# Ult charge bar — sync current value and per-class name so bar is correct on rebind
+	if is_instance_valid(player):
+		# Trigger the player's own updater so it resolves the class name internally
+		if player.has_method("_update_ult_hud"):
+			player.call("_update_ult_hud")
+		else:
+			var uc  : float = float(player.get("ult_charge")     if "ult_charge"     in player else 0.0)
+			var ucm : float = float(player.get("ult_charge_max") if "ult_charge_max" in player else 100.0)
+			update_ult_charge(uc, ucm)
 	# Weapon — connect signal then force-sync current weapon after one frame
 	# so WeaponManager has finished _ready() and _equip(0) before we read it.
 	call_deferred("_sync_weapon_manager")
@@ -3107,6 +3461,34 @@ func _sync_all() -> void:
 func _on_money_changed(t: int, amount: int) -> void:
 	if t != team_id or not is_instance_valid(gold_label): return
 	gold_label.text = "◆ %d" % amount
+
+func _on_gold_awarded(t: int, amount: int) -> void:
+	if t != team_id: return
+	show_gold_popup(amount)
+
+func show_gold_popup(amount: int) -> void:
+	var lbl := Label.new()
+	lbl.text = "+%dg" % amount
+	lbl.add_theme_font_size_override("font_size", 22)
+	lbl.add_theme_color_override("font_color", C_YELLOW)
+	lbl.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.8))
+	lbl.add_theme_constant_override("outline_size", 3)
+	# Anchor just below the top-center gold strip and float upward
+	lbl.anchor_left   = 0.5;  lbl.anchor_right  = 0.5
+	lbl.anchor_top    = 0.0;  lbl.anchor_bottom = 0.0
+	lbl.offset_left   = -40.0; lbl.offset_right = 40.0
+	lbl.offset_top    = 40.0;  lbl.offset_bottom = 66.0
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.modulate.a = 0.0
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lbl.z_index = 60
+	add_child(lbl)
+	var tw := lbl.create_tween()
+	tw.tween_property(lbl, "modulate:a", 1.0, 0.12)
+	tw.parallel().tween_property(lbl, "offset_top",    lbl.offset_top    - 48.0, 1.2).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(lbl, "offset_bottom", lbl.offset_bottom - 48.0, 1.2).set_ease(Tween.EASE_OUT)
+	tw.tween_property(lbl, "modulate:a", 0.0, 0.35)
+	tw.tween_callback(func(): if is_instance_valid(lbl): lbl.queue_free())
 
 func _on_prep_time_updated(t: float) -> void:
 	if t < 0.0 or not is_instance_valid(timer_label): return
@@ -3370,6 +3752,36 @@ func _build_class_ability_hud() -> void:
 		cd_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		vb.add_child(cd_lbl)
 		_class_ab_cdlbls.append(cd_lbl)
+
+		# ── CD overlay — dark fill + large centered timer ─────────────
+		var ov_ctrl := Control.new()
+		ov_ctrl.set_anchors_preset(Control.PRESET_FULL_RECT)
+		ov_ctrl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ov_ctrl.visible = false
+		panel.add_child(ov_ctrl)
+
+		# Sweep rect: top-anchored, height scaled in _update_ability_cooldown_overlays()
+		var ov_rect := ColorRect.new()
+		ov_rect.anchor_left   = 0.0
+		ov_rect.anchor_right  = 1.0
+		ov_rect.anchor_top    = 0.0
+		ov_rect.anchor_bottom = 0.0
+		ov_rect.offset_bottom = 0.0
+		ov_rect.color = Color(0.0, 0.0, 0.0, 0.62)
+		ov_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ov_ctrl.add_child(ov_rect)
+		_class_ab_sweep_rects.append(ov_rect)
+
+		var ov_lbl := Label.new()
+		ov_lbl.set_anchors_preset(Control.PRESET_FULL_RECT)
+		ov_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ov_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		ov_lbl.add_theme_font_size_override("font_size", 16)
+		ov_lbl.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+		ov_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ov_ctrl.add_child(ov_lbl)
+		_class_ab_overlays.append(ov_ctrl)
+		_class_ab_overlay_lbls.append(ov_lbl)
 func _tick_class_ability_hud() -> void:
 	if not is_instance_valid(player): return
 	if _class_ab_panels.size() < 4: return
@@ -3392,45 +3804,74 @@ func _tick_class_ability_hud() -> void:
 					_class_ab_desclbs[i].visible = (d != "")
 
 	# ── Cooldown (updated every tick) ─────────────────────────────────────
+	_update_ability_cooldown_overlays(cds, maxs)
+
+
+# Updates the 4 class-ability slot overlays: linear sweep height and timer label.
+# Separated from _tick_class_ability_hud so the indicator logic is testable in isolation.
+func _update_ability_cooldown_overlays(cds: Array, maxs: Array) -> void:
 	for i in 4:
-		var cd_bar := _class_ab_cdbars[i]
-		var cd_lbl := _class_ab_cdlbls[i]
-		var panel  := _class_ab_panels[i]
+		if i >= _class_ab_panels.size(): break
+		var cd_bar : ProgressBar = _class_ab_cdbars[i]        if i < _class_ab_cdbars.size()       else null
+		var cd_lbl : Label       = _class_ab_cdlbls[i]        if i < _class_ab_cdlbls.size()       else null
+		var panel  : Control     = _class_ab_panels[i]
+		var ov     : Control     = _class_ab_overlays[i]      if i < _class_ab_overlays.size()     else null
+		var ov_lbl : Label       = _class_ab_overlay_lbls[i]  if i < _class_ab_overlay_lbls.size() else null
+		var sweep  : ColorRect   = _class_ab_sweep_rects[i]   if i < _class_ab_sweep_rects.size()  else null
 
 		var cd : float = cds[i]  if i < cds.size()  else 0.0
 		var mx : float = maxs[i] if i < maxs.size() else 1.0
 		if mx <= 0.0: mx = 1.0
 
 		if cd <= 0.0:
-			if cd_bar.value != 1.0: cd_bar.value = 1.0
-			if cd_lbl.text  != "READY": cd_lbl.text = "READY"
+			if is_instance_valid(cd_bar) and cd_bar.value != 1.0: cd_bar.value = 1.0
+			if is_instance_valid(cd_lbl) and cd_lbl.text != "READY": cd_lbl.text = "READY"
 			if panel.modulate != Color.WHITE: panel.modulate = Color.WHITE
+			if is_instance_valid(ov) and ov.visible: ov.visible = false
 		else:
-			var new_val := 1.0 - (cd / mx)
-			if absf(cd_bar.value - new_val) > 0.005: cd_bar.value = new_val
-			var new_text := "%.1fs" % cd
-			if cd_lbl.text != new_text: cd_lbl.text = new_text
+			var frac     : float  = cd / mx            # 1.0 = full cooldown, 0.0 = ready
+			var new_val  : float  = 1.0 - frac
+			var new_text : String = "%.1fs" % cd
+			if is_instance_valid(cd_bar) and absf(cd_bar.value - new_val) > 0.005:
+				cd_bar.value = new_val
+			if is_instance_valid(cd_lbl) and cd_lbl.text != new_text:
+				cd_lbl.text = new_text
 			var dark := Color(0.45, 0.45, 0.45, 1.0)
 			if panel.modulate != dark: panel.modulate = dark
+			if is_instance_valid(ov):
+				if not ov.visible: ov.visible = true
+				# Scale sweep rect from top downward — height shrinks as cooldown depletes
+				if is_instance_valid(sweep):
+					sweep.offset_bottom = panel.size.y * frac
+				if is_instance_valid(ov_lbl) and ov_lbl.text != new_text:
+					ov_lbl.text = new_text
 
 
 # ─────────────────────────────────────────────────────────────
 # MINIMAP — Halo 3 style, player-centred circle
 # ─────────────────────────────────────────────────────────────
 func _build_minimap() -> void:
+	# Smaller in split-screen (viewport is already half the window)
+	var gs := get_node_or_null("/root/GameSettings")
+	var _pc : int = int(gs.get("player_count") if is_instance_valid(gs) and "player_count" in gs else 1)
+	var mm_sz   : float = 118.0 if _pc > 1 else 174.0
+	var mm_pad  : float = 8.0
+
 	# WoW-style: fixed-size round minimap anchored to top-right corner
 	var container := Control.new()
 	container.anchor_left   = 1.00
 	container.anchor_right  = 1.00
 	container.anchor_top    = 0.00
 	container.anchor_bottom = 0.00
-	container.offset_left   = -190
-	container.offset_right  = -8
-	container.offset_top    = 8
-	container.offset_bottom = 182     # 174px tall = roughly square
+	container.offset_left   = -(mm_sz + mm_pad)
+	container.offset_right  = -mm_pad
+	container.offset_top    = mm_pad
+	container.offset_bottom = mm_sz + mm_pad
 	container.mouse_filter  = Control.MOUSE_FILTER_IGNORE
 	container.z_index       = 110
 	add_child(container)
+	_minimap = container
+	container.visible = true   # always visible, regardless of shop/topdown state
 
 	# Outer ring decoration (WoW compass-style border)
 	var ring_bg := Panel.new()
@@ -3479,10 +3920,12 @@ class _MinimapNode extends Control:
 	var mm_bases       : Array   = []   # {pos:Vector3, friendly:bool}
 	var mm_units       : Array   = []   # {pos:Vector3, friendly:bool, is_player:bool}
 	var mm_hive_units  : Array   = []   # {pos:Vector3} — enemy units from eggs
-	var mm_hives       : Array   = []   # {pos:Vector3, tier:int, cleared:bool}
-	var mm_eggs        : Array   = []   # {pos:Vector3}
-	var mm_revealed    : Array   = []   # {pos:Vector3, radius:float} — permanent fog reveals
-	var mm_valid       : bool    = false
+	var mm_hives         : Array   = []   # {pos:Vector3, tier:int, cleared:bool}
+	var mm_eggs          : Array   = []   # {pos:Vector3}
+	var mm_crowd_zombies : Array   = []   # Vector3 — Z2/Z3 unloaded zombie positions
+	var mm_clusters      : Array   = []   # {pos:Vector3, count:int} — density heat-dots
+	var mm_revealed      : Array   = []   # {pos:Vector3, radius:float} — permanent fog reveals
+	var mm_valid         : bool    = false
 
 	func _draw() -> void:
 		var sz := size
@@ -3537,7 +3980,7 @@ class _MinimapNode extends Control:
 			var mp := Vector2(cx + frac.x * r, cy + frac.y * r)
 			draw_circle(mp, 2.0, Color(1.0, 0.15, 0.05))
 
-		# Draw hive cluster icons (purple square, only when revealed)
+		# Draw hive cluster icons (hexagon ⬡, only when revealed)
 		for hive_d in mm_hives:
 			var diff := (hive_d.pos as Vector3) - lp_pos
 			var rot  := _world_to_mm(diff.x, diff.z, yaw)
@@ -3545,12 +3988,23 @@ class _MinimapNode extends Control:
 			if not _is_revealed(hive_d.pos) and not hive_d.cleared: continue
 			var clipped := frac if frac.length() <= 1.0 else frac.normalized() * 0.96
 			var mp  := Vector2(cx + clipped.x * r, cy + clipped.y * r)
-			var col : Color = Color(0.5, 0.5, 0.5, 0.7) if hive_d.cleared else Color(0.65, 0.0, 0.85)
-			draw_rect(Rect2(mp - Vector2(4.5, 4.5), Vector2(9.0, 9.0)), col)
+			var col : Color = Color(0.45, 0.45, 0.45, 0.7) if hive_d.cleared \
+				else Color(0.65, 0.0, 0.85)
+			# Flat-top hexagon
+			var hr : float = 5.5
+			var hex_pts := PackedVector2Array()
+			for i in 6:
+				var ang := TAU * i / 6.0 + PI / 6.0
+				hex_pts.append(mp + Vector2(cos(ang), sin(ang)) * hr)
+			draw_colored_polygon(hex_pts, col)
 			if not hive_d.cleared:
-				draw_rect(Rect2(mp - Vector2(4.5, 4.5), Vector2(9.0, 9.0)), Color(1.0, 0.3, 1.0, 0.5), false, 1.5)
+				for i in 6:
+					draw_line(hex_pts[i], hex_pts[(i + 1) % 6],
+						Color(1.0, 0.35, 1.0, 0.8), 1.2)
+				# Tier indicator dot inside hexagon
+				draw_circle(mp, float(hive_d.tier) * 0.7 + 1.2, Color(1.0, 0.85, 0.0))
 
-		# Draw egg icons (orange dot, only when revealed)
+		# Draw egg icons (diamond ◆, only when revealed)
 		for egg_d in mm_eggs:
 			var diff := (egg_d.pos as Vector3) - lp_pos
 			var rot  := _world_to_mm(diff.x, diff.z, yaw)
@@ -3558,7 +4012,33 @@ class _MinimapNode extends Control:
 			if frac.length() > 1.0: continue
 			if not _is_revealed(egg_d.pos): continue
 			var mp := Vector2(cx + frac.x * r, cy + frac.y * r)
-			draw_circle(mp, 3.0, Color(1.0, 0.5, 0.05))
+			var hs : float = 3.5
+			draw_colored_polygon(PackedVector2Array([
+				mp + Vector2(0, -hs), mp + Vector2(hs, 0),
+				mp + Vector2(0,  hs), mp + Vector2(-hs, 0)
+			]), Color(1.0, 0.85, 0.1))
+
+		# Draw unloaded crowd zombie dots (Z2/Z3 — small, dimmer than Z1 units)
+		for zpos in mm_crowd_zombies:
+			var diff := (zpos as Vector3) - lp_pos
+			var rot  := _world_to_mm(diff.x, diff.z, yaw)
+			var frac := rot / WORLD_R
+			if frac.length() > 1.0: continue
+			draw_circle(Vector2(cx + frac.x * r, cy + frac.y * r),
+				1.5, Color(1.0, 0.4, 0.1, 0.55))
+
+		# Density heat-dots — radius and opacity scale with cluster enemy count
+		for cl in mm_clusters:
+			var diff := (cl.pos as Vector3) - lp_pos
+			var rot  := _world_to_mm(diff.x, diff.z, yaw)
+			var frac := rot / WORLD_R
+			if frac.length() > 1.05: continue
+			var clipped := frac if frac.length() <= 1.0 else frac.normalized() * 0.98
+			var mp := Vector2(cx + clipped.x * r, cy + clipped.y * r)
+			var cnt : int = int(cl.count)
+			var dot_r : float = clampf(3.0 + sqrt(float(cnt)) * 0.9, 3.0, 10.0)
+			var alpha : float = clampf(0.35 + float(cnt) * 0.025, 0.35, 0.85)
+			draw_circle(mp, dot_r, Color(1.0, 0.2, 0.05, alpha))
 
 		# Draw revealed area rings (subtle grey glow showing explored zones)
 		for rev in mm_revealed:

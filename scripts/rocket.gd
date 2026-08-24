@@ -129,14 +129,19 @@ func _orient() -> void:
 	look_at(global_position + dir, up)
 
 func explode() -> void:
+	# REAL BUG FIX: this guard used to sit AFTER the VFX/screenshake calls
+	# below, so a second call to explode() (currently not reachable given
+	# both real call sites already guard before calling, but fragile if a
+	# future call site doesn't) would re-fire explosion VFX/screen shake a
+	# second time even though damage/queue_free correctly only ran once.
+	if _exploded: return
+	_exploded = true
 	var ie := get_tree().get_first_node_in_group("impact_effects")
 	if is_instance_valid(ie) and ie.has_method("spawn_explosion"): ie.spawn_explosion(global_position, explosion_radius)
 	var ss := get_tree().get_first_node_in_group("screen_shake")
 	if is_instance_valid(ss) and ss.has_method("explosion"): ss.explosion()
 	var pp := get_tree().get_first_node_in_group("post_processing")
 	if is_instance_valid(pp) and pp.has_method("pulse_bloom"): pp.pulse_bloom(1.2, 0.25)
-	if _exploded: return
-	_exploded = true
 	set_physics_process(false)
 	if is_instance_valid(_mesh): _mesh.visible = false
 	if is_instance_valid(_fly_audio): _fly_audio.stop()

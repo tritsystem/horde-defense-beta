@@ -1,4 +1,16 @@
 ﻿# ============================================================
+# ⚠ NOT LIVE — NOT ATTACHED TO ANY SCENE (2026-07-25) ⚠
+# zombie.tscn's script is res://assets/weapons/resources/Player/zombie.gd,
+# NOT this file. This BaseZombie class only still matters because ~20 files
+# under "assets/zombies/scripts for creeps/" extend it — none of THOSE are
+# wired into any live scene or reachable from CreepDeckManager either
+# (their referenced .tscn paths don't exist). Editing this file has ZERO
+# effect on actual gameplay. If you're trying to change zombie behavior,
+# edit assets/weapons/resources/Player/zombie.gd instead. This file (and its
+# AIMode enum, which is ordered DIFFERENTLY than the live script's) is kept
+# only because it has real uncommitted work in progress — do not delete
+# without checking with the user first.
+# ============================================================
 # zombie.gd — Optimized BaseZombie
 # ============================================================
 # PERFORMANCE DESIGN:
@@ -24,6 +36,28 @@ enum AIMode { FOLLOW_OWNER, ATTACK, DEFEND, PATROL, STAY, LANE_PUSH }
 # LOD2 = direct position move, no physics queries
 # LOD3 = sleeping, zero cost
 enum LOD { FULL, MOVE_ONLY, POSITION_ONLY, SLEEPING }
+
+# ── TUNING CONSTANTS ─────────────────────────────────────────
+# All per-frame behaviour knobs live here — change a number once,
+# it propagates to every function that references the constant.
+const NAV_REFRESH_RATE    : float = 0.25  # seconds between nav-path recalcs (LOD0 only)
+const CHIP_DAMAGE_PCT     : float = 0.47  # damage fraction vs units without player aura (~7/15)
+const SEP_RADIUS          : float = 2.2   # radius at which zombies push each other apart
+const SEP_FORCE           : float = 18.0  # separation push strength
+const SEP_MAX_FORCE       : float = 10.0  # per-frame cap on combined separation force
+const LOD1_SPEED_MULT     : float = 0.85  # speed fraction at LOD1 (simplified steering)
+const LOD2_SPEED_MULT     : float = 0.60  # speed fraction at LOD2 (position-only movement)
+const COMBAT_DECEL_RATE   : float = 0.60  # move_toward braking rate when inside attack range
+const STRUCT_ATTACK_RANGE : float = 5.5   # effective melee range vs turrets / bases
+const TARGET_LOCK_SECS    : float = 3.0   # seconds a spotted or chased target is held
+const HIT_AGGRO_SECS      : float = 2.5   # target-lock duration granted on taking damage
+const UNSTUCK_SIDE_VEL    : float = 6.0   # sideways velocity component in stuck-recovery push
+const UNSTUCK_FWD_VEL     : float = 4.0   # forward velocity component in stuck-recovery push
+const UNSTUCK_JUMP_MULT   : float = 0.60  # jump_height fraction used for stuck-recovery jump
+const AGGRO_BURST_MULT    : float = 8.00  # velocity lerp alpha when surging onto a spotted target
+const CAUTION_DAMP_MULT   : float = 0.50  # speed fraction in cautious STAY (hold-position) mode
+const BLOCKER_RANGE       : float = 6.00  # extra detection radius beyond detection_range for lane-blocking structures
+const KNOCKBACK_DURATION  : float = 0.10  # seconds to brake from full speed at melee commit (braking step = move_speed / KNOCKBACK_DURATION)
 
 # ── IDENTITY ─────────────────────────────────────────────────
 var team_id      : int    = 1
@@ -90,7 +124,6 @@ var _lod_int       : int      = 0   # mirrors lod as int for manager
 var _nav_agent     : NavigationAgent3D = null
 var _nav_target_pos: Vector3  = Vector3.ZERO
 var _nav_refresh   : float    = 0.0
-const NAV_REFRESH_RATE : float = 0.25
 
 # ── NEIGHBORS (pushed by ZombieHordeManager, not scanned) ───
 # ZombieHordeManager writes to this array every grid rebuild.
@@ -108,17 +141,18 @@ var _footstep_timer   : float = 0.0
 var _idle_timer       : float = 0.0
 var _last_pos_timer   : float = 0.0
 var _last_pos         : Vector3
+var _smooth_speed_mult: float = 1.0
+# Exposed for CreepOverlay: counts down from 3.0 after each hit
+var hud_hp_visible_timer : float = 0.0
 
 # ── CACHED BLEND ─────────────────────────────────────────────
 var _last_blend_val   : float = -1.0   # only write anim when changed
 
 # ── DEAD ─────────────────────────────────────────────────────
 var _is_dead          : bool  = false
-var _health_bar_node  : Node3D = null
 
 # Energy aura — set by PlayerEnergyAura.gd each pulse
 var energized_timer   : float = 0.0
-const CHIP_DAMAGE_PCT : float = 0.47  # ~7 dmg out of 15 when not energized
 
 # ── REFS ─────────────────────────────────────────────────────
 var _sfx       : AudioStreamPlayer3D = null
@@ -154,7 +188,6 @@ func _ready() -> void:
 	add_child(_nav_agent)
 
 	call_deferred("_deferred_init")
-	_build_energy_icon()
 
 
 func _deferred_init() -> void:
@@ -186,14 +219,13 @@ func _find_bases() -> void:
 		if not enemy_base.is_in_group("units"):
 			enemy_base.add_to_group("units")
 		return
-	# Scan scene for bases by team_id
-	enemy_base    = null
-	friendly_base = null
+	# Only fill in whatever is missing — never wipe a pre-set valid reference
 	for b in get_tree().get_nodes_in_group("bases"):
-		if not is_instance_valid(b): continue
-		if "team_id" in b:
-			if int(b.get("team_id")) == team_id: friendly_base = b as Node3D
-			else:                                enemy_base    = b as Node3D
+		if not is_instance_valid(b) or not ("team_id" in b): continue
+		if int(b.get("team_id")) == team_id:
+			if not is_instance_valid(friendly_base): friendly_base = b as Node3D
+		else:
+			if not is_instance_valid(enemy_base):   enemy_base    = b as Node3D
 	if not is_instance_valid(enemy_base):
 		enemy_base = get_tree().get_first_node_in_group("enemy_base") as Node3D
 	# Safety: never attack own base
@@ -248,8 +280,8 @@ func get_lod() -> int: return _lod_int
 # ============================================================
 # POOL RESET — called by ZombieHordeManager.spawn_*
 # ============================================================
-func reset(pos: Vector3, mgr) -> void:
-	_horde_mgr        = mgr
+func reset(pos: Vector3) -> void:
+	_horde_mgr        = null   # ZHM sets this via _horde_mgr property after calling reset()
 	_is_dead          = false
 	health            = max_health
 	target            = null
@@ -258,7 +290,9 @@ func reset(pos: Vector3, mgr) -> void:
 	_stuck_timer      = 0.0
 	_retarget_timer   = 0.0
 	velocity          = Vector3.ZERO
-	_last_blend_val   = -1.0
+	_smooth_speed_mult = 1.0
+	_last_blend_val      = -1.0
+	hud_hp_visible_timer = 0.0
 	_neighbors_cache.clear()
 	_patrol_index     = 0
 	_patrol_dir       = 1
@@ -291,20 +325,13 @@ func _physics_process(delta: float) -> void:
 	elif velocity.y < 0.0: velocity.y = 0.0
 
 	# Decrement timers once
-	_attack_timer   = maxf(0.0, _attack_timer   - delta)
-	_jump_cd        = maxf(0.0, _jump_cd        - delta)
-	_target_lock    = maxf(0.0, _target_lock    - delta)
-	_nav_refresh    = maxf(0.0, _nav_refresh    - delta)
-	energized_timer  = maxf(0.0, energized_timer - delta)  # energy aura tick
-	_update_energy_icon()
+	_attack_timer        = maxf(0.0, _attack_timer        - delta)
+	_jump_cd             = maxf(0.0, _jump_cd             - delta)
+	_target_lock         = maxf(0.0, _target_lock         - delta)
+	_nav_refresh         = maxf(0.0, _nav_refresh         - delta)
+	energized_timer      = maxf(0.0, energized_timer      - delta)
+	hud_hp_visible_timer = maxf(0.0, hud_hp_visible_timer - delta)
 	if _target_lock <= 0.0: target = null
-
-	# ── Health bar billboard — must face camera every frame ──────
-	# _update_health_bar() is also called on each hit, but billboard
-	# rotation needs to run every frame so the bar doesn't stick to
-	# one angle after a single damage event.
-	if is_instance_valid(_health_bar_node):
-		_update_health_bar()
 
 	# ── Separation runs EVERY frame at all LODs ─────────────────
 	# This prevents stacking even when zombies are stopped or attacking.
@@ -327,6 +354,18 @@ func _physics_process(delta: float) -> void:
 # ── LOD0 — full AI + NavigationAgent ─────────────────────────
 func _tick_full(delta: float) -> void:
 	if _spawn_immunity > 0.0: _spawn_immunity -= get_physics_process_delta_time()
+
+	# ── MOBA LANE PUSH ───────────────────────────────────────────
+	# Lane minions own their whole behaviour in _tick_lane_push:
+	#   target priority (turrets → enemy units in aggro → base) AND
+	#   waypoint advancement, all via direct steering (no NavMesh needed).
+	# Do NOT run _retarget_from_cache here — it would set `target` and divert
+	# the minion into nav-agent movement, which freezes with no baked NavMesh.
+	if ai_mode == AIMode.LANE_PUSH:
+		_tick_lane_push(delta)
+		_tick_audio(delta)
+		return
+
 	# Retarget from neighbors cache (O(k) not O(n))
 	_retarget_timer -= delta
 	if _retarget_timer <= 0.0:
@@ -366,7 +405,7 @@ func _tick_move_only(delta: float) -> void:
 		velocity.z = move_toward(velocity.z, 0.0, move_speed * delta * 8)
 		return
 
-	_steer_toward(dest, delta, move_speed * 0.85)
+	_steer_toward(dest, delta, move_speed * LOD1_SPEED_MULT)
 
 
 # ── LOD2 — cheapest possible movement, no AI, no retarget ────
@@ -387,7 +426,7 @@ func _tick_lod2_cheap(delta: float) -> void:
 	if dir.length_squared() < 0.01:
 		velocity.x = 0.0; velocity.z = 0.0; return
 	dir = dir.normalized()
-	var spd := move_speed * 0.6   # slower at LOD2 — distant zombies look fine
+	var spd := move_speed * LOD2_SPEED_MULT
 	velocity.x = dir.x * spd
 	velocity.z = dir.z * spd
 
@@ -406,25 +445,32 @@ func _retarget_from_cache() -> void:
 		var d : float = global_position.distance_to((n as Node3D).global_position)
 		if d < best_d: best_d = d; best = n as Node3D
 
-	# 2. If nothing in cache, scan units group
-	if not is_instance_valid(best):
+	# 2. Player scan — always runs, ungated (players never in neighbor cache)
+	for p in get_tree().get_nodes_in_group("player"):
+		if not is_instance_valid(p) or not (p is Node3D): continue
+		if not ("team_id" in p) or int(p.get("team_id")) == team_id: continue
+		if "is_dead" in p and p.get("is_dead"): continue
+		var d : float = global_position.distance_to((p as Node3D).global_position)
+		if d < best_d: best_d = d; best = p as Node3D
+
+	# 3. Units group scan — gated by ai_mode to avoid every-frame cost
+	if not is_instance_valid(best) and ai_mode == AIMode.ATTACK:
 		for u in get_tree().get_nodes_in_group("units"):
 			if not is_instance_valid(u) or u == self: continue
-			if u == friendly_base: continue          # never target own base
-			if u == enemy_base: continue             # base handled in step 3
+			if u == friendly_base or u == enemy_base: continue
 			if not ("team_id" in u): continue
 			if int(u.team_id) == team_id: continue
 			var d : float = global_position.distance_to((u as Node3D).global_position)
 			if d < best_d: best_d = d; best = u as Node3D
 
-	# 3. Enemy base as last resort
+	# 4. Enemy base as last resort
 	if not is_instance_valid(best) and is_instance_valid(enemy_base) \
 			and enemy_base != friendly_base:
 		best = enemy_base
 
 	if is_instance_valid(best):
 		target       = best
-		_target_lock = 3.0
+		_target_lock = TARGET_LOCK_SECS
 
 
 # ── Full nav-agent movement ───────────────────────────────────
@@ -433,8 +479,8 @@ func _move_toward_target_full(delta: float) -> void:
 		target = null; return
 	var dist := global_position.distance_to(target.global_position)
 	if dist <= attack_range:
-		velocity.x = move_toward(velocity.x, 0.0, move_speed * delta * 10)
-		velocity.z = move_toward(velocity.z, 0.0, move_speed * delta * 10)
+		velocity.x = move_toward(velocity.x, 0.0, move_speed * delta / KNOCKBACK_DURATION)
+		velocity.z = move_toward(velocity.z, 0.0, move_speed * delta / KNOCKBACK_DURATION)
 		_try_attack(target)
 		return
 	# When nav path is finished but target not in range, force path refresh.
@@ -452,20 +498,28 @@ func _move_to_point_full(pos: Vector3, delta: float) -> void:
 		_nav_target_pos = pos
 		_nav_refresh    = NAV_REFRESH_RATE
 
-	if _nav_agent.is_navigation_finished(): return
+	# When the NavAgent has no path (no/partial NavMesh over the play area),
+	# is_navigation_finished() returns true immediately. Direct-steer instead
+	# of returning — otherwise the zombie freezes in place forever.
+	if _nav_agent.is_navigation_finished():
+		_steer_toward(pos, delta, move_speed)
+		return
 
 	var next := _nav_agent.get_next_path_position()
 	var dir  := (next - global_position)
 	dir.y = 0.0
-	if dir.length_squared() < 0.01: return
+	if dir.length_squared() < 0.01:
+		_steer_toward(pos, delta, move_speed)
+		return
 	dir = dir.normalized()
 
 	# Separation from neighbor cache (cheap — no group scan)
 	var sep := _calc_separation()
 	var final_dir := (dir + sep * 0.4).normalized()
 
-	velocity.x = lerp(velocity.x, final_dir.x * move_speed, 0.2)
-	velocity.z = lerp(velocity.z, final_dir.z * move_speed, 0.2)
+	_smooth_speed_mult = lerpf(_smooth_speed_mult, 1.0, delta * AGGRO_BURST_MULT)
+	velocity.x = lerp(velocity.x, final_dir.x * move_speed * _smooth_speed_mult, delta * AGGRO_BURST_MULT)
+	velocity.z = lerp(velocity.z, final_dir.z * move_speed * _smooth_speed_mult, delta * AGGRO_BURST_MULT)
 	rotation.y = lerp_angle(rotation.y, atan2(final_dir.x, final_dir.z), 0.15)
 
 
@@ -485,7 +539,7 @@ func _tick_lane_push(delta: float) -> void:
 	if is_instance_valid(tgt):
 		var d := global_position.distance_to(tgt.global_position)
 		var _is_struct : bool = tgt.is_in_group("bases") or tgt.is_in_group("turrets")
-		var _eff : float = 5.5 if _is_struct else attack_range
+		var _eff : float = STRUCT_ATTACK_RANGE if _is_struct else attack_range
 		if d <= _eff:
 			var dir := tgt.global_position - global_position
 			dir.y = 0.0
@@ -493,8 +547,8 @@ func _tick_lane_push(delta: float) -> void:
 				rotation.y = lerp_angle(rotation.y, atan2(dir.x, dir.z), 0.85)  # snap to face target
 			_try_attack(tgt)
 			# Decelerate smoothly — avoids snap and jitter
-			velocity.x = move_toward(velocity.x, 0.0, move_speed * 0.6)
-			velocity.z = move_toward(velocity.z, 0.0, move_speed * 0.6)
+			velocity.x = move_toward(velocity.x, 0.0, move_speed * COMBAT_DECEL_RATE)
+			velocity.z = move_toward(velocity.z, 0.0, move_speed * COMBAT_DECEL_RATE)
 		else:
 			# Face target while moving toward it
 			var face_dir := tgt.global_position - global_position
@@ -555,7 +609,7 @@ func _tick_lane_push(delta: float) -> void:
 func _find_lane_target() -> Node3D:
 	var best_turret : Node3D = null
 	var best_unit   : Node3D = null
-	var turret_d    : float  = detection_range + 6.0   # turrets visible further
+	var turret_d    : float  = detection_range + BLOCKER_RANGE   # structures visible beyond normal detection
 	var unit_d      : float  = aggro_range
 
 	# ── Priority 1: structures/turrets ───────────────────────────
@@ -623,8 +677,8 @@ func _is_ahead_of_me(node: Node3D) -> bool:
 
 
 func _tick_stay() -> void:
-	velocity.x = move_toward(velocity.x, 0.0, move_speed * 0.5)
-	velocity.z = move_toward(velocity.z, 0.0, move_speed * 0.5)
+	velocity.x = move_toward(velocity.x, 0.0, move_speed * CAUTION_DAMP_MULT)
+	velocity.z = move_toward(velocity.z, 0.0, move_speed * CAUTION_DAMP_MULT)
 	var near := _scan_for_enemy()
 	if is_instance_valid(near):
 		var dist := global_position.distance_to(near.global_position)
@@ -652,10 +706,6 @@ func _steer_toward(dest: Vector3, delta: float, speed: float) -> void:
 # Uses neighbor cache (pushed by ZombieHordeManager) — NO physics
 # queries so no re-entrant callbacks and no stack overflow.
 func _apply_separation_impulse() -> void:
-	const SEP_RADIUS : float = 2.2
-	const SEP_FORCE  : float = 18.0
-	const MAX_FORCE  : float = 10.0
-
 	var force := Vector3.ZERO
 
 	# Cache-based separation (safe inside _physics_process)
@@ -672,8 +722,8 @@ func _apply_separation_impulse() -> void:
 		if d < SEP_RADIUS:
 			force += diff.normalized() * (1.0 - d / SEP_RADIUS) * SEP_FORCE
 
-	if force.length() > MAX_FORCE:
-		force = force.normalized() * MAX_FORCE
+	if force.length() > SEP_MAX_FORCE:
+		force = force.normalized() * SEP_MAX_FORCE
 
 	velocity.x += force.x
 	velocity.z += force.z
@@ -699,7 +749,7 @@ func _tick_attack(delta: float) -> void:
 	var scan_target := _scan_for_enemy()
 	if is_instance_valid(scan_target):
 		target       = scan_target
-		_target_lock = 3.0
+		_target_lock = TARGET_LOCK_SECS
 		_move_toward_target_full(delta)
 		return
 	# Fall back to marching toward enemy base — never friendly base
@@ -805,15 +855,15 @@ func _unstuck() -> void:
 		if _nd <= attack_range * 2.0: return  # too close — just push sideways
 	# Try jump only when truly stuck far from target
 	if _jump_cd <= 0.0:
-		velocity.y = sqrt(2.0 * gravity * jump_height * 0.6)
+		velocity.y = sqrt(2.0 * gravity * jump_height * UNSTUCK_JUMP_MULT)
 		_jump_cd   = jump_cooldown
 		return
 	# Push sideways via velocity only — no position teleport
 	var side_dir : float = 1.0 if randf() > 0.5 else -1.0
 	var side := global_transform.basis.x * side_dir
 	var fwd  := -global_transform.basis.z
-	velocity.x = side.x * 6.0 + fwd.x * 4.0
-	velocity.z = side.z * 6.0 + fwd.z * 4.0
+	velocity.x = side.x * UNSTUCK_SIDE_VEL + fwd.x * UNSTUCK_FWD_VEL
+	velocity.z = side.z * UNSTUCK_SIDE_VEL + fwd.z * UNSTUCK_FWD_VEL
 	_nav_refresh = 0.0
 	_wp_stuck_timer = 0.0
 
@@ -830,7 +880,7 @@ func _try_attack(t: Node3D) -> void:
 
 	var is_structure : bool = t.is_in_group("bases") or t.is_in_group("turrets")
 	# Wider effective range for base/turret nodes whose origin may be inside mesh
-	var eff_range : float = attack_range if not is_structure else maxf(attack_range, 5.5)
+	var eff_range : float = attack_range if not is_structure else maxf(attack_range, STRUCT_ATTACK_RANGE)
 	var dist : float = global_position.distance_to(t.global_position)
 	if dist > eff_range: return
 
@@ -840,7 +890,7 @@ func _try_attack(t: Node3D) -> void:
 
 	# Committed — start cooldown, play VFX/audio
 	_attack_timer = attack_cooldown
-	_play(attack_sounds, 5.0, 0.85, 1.15)
+	_play(attack_sounds, 5.0, 0.85, 1.15, "zombie_attack")
 	if _anim_tree:
 		_anim_tree.set("parameters/attack_shot/request",
 			AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
@@ -872,65 +922,7 @@ func _has_line_of_sight(t: Node3D) -> bool:
 
 
 func _show_health_bar() -> void:
-	if is_instance_valid(_health_bar_node): _update_health_bar(); return
-	var root := Node3D.new(); root.name = "HBar"; root.position = Vector3(0, 2.2, 0)
-	add_child(root); _health_bar_node = root
-
-	# Background tray — slightly wider/taller than fill so it forms a visible border.
-	# Thinner in Z (0.008) so its back face sits BEHIND the fill's back face.
-	var bg := MeshInstance3D.new(); bg.name = "BG"
-	var bm := BoxMesh.new(); bm.size = Vector3(1.06, 0.14, 0.008)
-	bg.mesh = bm
-	var bmat := StandardMaterial3D.new()
-	bmat.albedo_color = Color(0.08, 0.08, 0.08)
-	bmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	bmat.cull_mode    = BaseMaterial3D.CULL_DISABLED
-	bg.material_override = bmat
-	root.add_child(bg)
-
-	# Fill bar — thicker Z (0.016) so its back face protrudes closer to the camera,
-	# rendering cleanly in front of the background tray with no z-fighting.
-	var fill := MeshInstance3D.new(); fill.name = "Fill"
-	var fm := BoxMesh.new(); fm.size = Vector3(1.0, 0.10, 0.016)
-	fill.mesh = fm
-	var fmat := StandardMaterial3D.new()
-	fmat.albedo_color = Color(0.1, 0.9, 0.15)
-	fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	fmat.cull_mode    = BaseMaterial3D.CULL_DISABLED
-	fill.material_override = fmat
-	root.add_child(fill)
-
-	_update_health_bar()
-	get_tree().create_timer(3.0).timeout.connect(
-		func(): if is_instance_valid(_health_bar_node): _health_bar_node.queue_free(); _health_bar_node = null,
-		CONNECT_ONE_SHOT)
-
-func _update_health_bar() -> void:
-	if not is_instance_valid(_health_bar_node): return
-	var fill := _health_bar_node.get_node_or_null("Fill") as MeshInstance3D
-	if not is_instance_valid(fill): return
-	var r := clampf(health / maxf(max_health, 0.001), 0.0, 1.0)
-	# Scale fill from left — scale.x shrinks the 1-unit-wide mesh, position shifts
-	# it left so its left edge stays pinned to the bar's left edge.
-	fill.scale.x = r
-	fill.position.x = (r - 1.0) * 0.5
-	var mat := fill.material_override as StandardMaterial3D
-	if mat: mat.albedo_color = Color(1.0 - r, r * 0.9, 0.1)
-	# Billboard: rotate on Y axis only so the bar stays upright and faces the camera
-	# even when the camera is above or below the bar's world height.
-	var cam := get_tree().root.get_camera_3d()
-	var look_src : Node3D = cam if is_instance_valid(cam) else null
-	if not is_instance_valid(look_src):
-		var players := get_tree().get_nodes_in_group("player")
-		if not players.is_empty() and players[0] is Node3D:
-			look_src = players[0] as Node3D
-	if is_instance_valid(look_src):
-		var bar_pos  := _health_bar_node.global_position
-		var src_pos  := look_src.global_position
-		# Project target to bar's Y so we only rotate around the up axis
-		var flat_target := Vector3(src_pos.x, bar_pos.y, src_pos.z)
-		if bar_pos.distance_to(flat_target) > 0.05:
-			_health_bar_node.look_at(flat_target, Vector3.UP)
+	hud_hp_visible_timer = 3.0
 
 
 func receive_energy(duration: float) -> void:
@@ -973,6 +965,9 @@ func take_damage(amount: float, instigator = null) -> void:
 						   safe_instigator.get("shooter_team_id") if "shooter_team_id" in safe_instigator else -1)
 		if it == team_id: return
 	health -= amount
+	var actual_dealt : float = amount if health >= 0.0 else amount + health
+	if is_instance_valid(safe_instigator) and safe_instigator.has_method("on_damage_dealt"):
+		safe_instigator.on_damage_dealt(actual_dealt)
 	_play(hurt_sounds, 3.0, 0.9, 1.1)
 	_show_health_bar()
 	# Floating damage number
@@ -986,7 +981,7 @@ func take_damage(amount: float, instigator = null) -> void:
 		_dn_node.spawn_number(amount, global_position + Vector3(0, 2.0, 0), _dtype_z, false)
 	if is_instance_valid(instigator) and instigator is Node3D:
 		target       = instigator as Node3D
-		_target_lock = 2.5
+		_target_lock = HIT_AGGRO_SECS
 	if health <= 0.0: _start_death()
 
 
@@ -1019,10 +1014,14 @@ func _tick_audio(delta: float) -> void:
 		_footstep_timer = footstep_interval
 
 
-func _play(arr: Array, vol: float, pmin: float, pmax: float) -> void:
+func _play(arr: Array, vol: float, pmin: float, pmax: float, category: String = "") -> void:
 	if not audio_enabled or arr.is_empty() or not is_instance_valid(_sfx): return
 	var valid := arr.filter(func(s): return s != null)
 	if valid.is_empty(): return
+	if category != "":
+		var am := get_node_or_null("/root/AudioManager")
+		if is_instance_valid(am) and not am.claim_voice(category, _sfx):
+			return
 	_sfx.stream = valid[randi() % valid.size()]
 	_sfx.volume_db = vol; _sfx.pitch_scale = randf_range(pmin, pmax)
 	_sfx.play()
@@ -1042,6 +1041,8 @@ func _start_death() -> void:
 	velocity = Vector3.ZERO
 	set_physics_process(false)
 	_play(death_sounds, 8.0, 0.8, 1.2)
+	var _ss := get_node_or_null("/root/ScreenShake")
+	if is_instance_valid(_ss): _ss.enemy_death(max_health)
 	if _anim_tree:
 		_anim_tree.set("parameters/death_shot/request",
 			AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
@@ -1134,51 +1135,7 @@ func _crystal_tick(crystal: Node3D, _oy: float, collected: bool) -> void:
 
 
 
-# ── Energy status icon ────────────────────────────────────────
-var _energy_icon : MeshInstance3D = null
-
-func _build_energy_icon() -> void:
-	var icon := MeshInstance3D.new()
-	icon.name = "EnergyIcon"
-	var sm   := SphereMesh.new()
-	sm.radius = 0.12; sm.height = 0.24; sm.radial_segments = 6; sm.rings = 3
-	icon.mesh = sm
-	var mat  := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.albedo_color = Color(0.5, 0.5, 0.5, 0.55)  # grey = unpowered
-	mat.emission_enabled = true
-	mat.emission = Color(0.3, 0.3, 0.3)
-	mat.emission_energy_multiplier = 1.0
-	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
-	icon.material_override = mat
-	icon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	icon.position = Vector3(0, 2.6, 0)
-	add_child(icon)
-	_energy_icon = icon
-
-func _update_energy_icon() -> void:
-	if not is_instance_valid(_energy_icon): return
-	var mat := _energy_icon.material_override as StandardMaterial3D
-	if not is_instance_valid(mat): return
-	if energized_timer > 0.0:
-		# Enemy zombies (team 2) glow RED when powered — friendly (team 1) glow cyan
-		var pulse : float = 3.5 + sin(Time.get_ticks_msec() * 0.006) * 1.0
-		if team_id == 2:
-			# Enemy — red
-			mat.albedo_color = Color(1.0, 0.2, 0.2, 0.9)
-			mat.emission = Color(1.0, 0.15, 0.1)
-		else:
-			# Friendly — cyan (same as player aura)
-			mat.albedo_color = Color(0.3, 0.85, 1.0, 0.8)
-			mat.emission = Color(0.3, 0.85, 1.0)
-		mat.emission_energy_multiplier = pulse
-	else:
-		# Unpowered — grey dot
-		mat.albedo_color = Color(0.45, 0.45, 0.45, 0.45)
-		mat.emission = Color(0.2, 0.2, 0.2)
-		mat.emission_energy_multiplier = 0.5
+# Energy icon and health bar are drawn by CreepOverlay (single CanvasItem pass).
 
 func _award_gold() -> void:
 	var gm := get_tree().get_first_node_in_group("game_manager")
@@ -1230,6 +1187,10 @@ func set_patrol_points(points: Array) -> void:
 ## Called by ZombieHordeManager every grid rebuild — zero group scan cost
 func push_neighbors(neighbors: Array) -> void:
 	_neighbors_cache = neighbors
+
+## Called by ZombieHordeManager with nearby player refs (optional enhancement)
+func push_players(_players: Array) -> void:
+	pass   # player detection handled by ungated scan in _retarget_from_cache
 
 
 func apply_upgrade(stat: String, amount: float) -> void:

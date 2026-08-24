@@ -15,11 +15,15 @@ class_name BruteCreep
 @export var stomp_damage    : float = 35.0
 @export var stomp_cooldown  : float = 5.0
 
-var _charge_timer : float = 0.0
-var _stomp_timer  : float = 0.0
-var _is_charging  : bool  = false
-var _charge_dir   := Vector3.ZERO
-var _charge_left  : float = 0.0
+var _charge_timer  : float = 0.0
+var _stomp_timer   : float = 0.0
+var _is_charging   : bool  = false
+var _charge_dir    := Vector3.ZERO
+var _charge_left   : float = 0.0
+var _stagger_timer : float = 0.0
+
+const STAGGER_THRESHOLD : float = 0.10   # fraction of max_health that triggers stagger
+const STAGGER_DURATION  : float = 0.08   # seconds of interrupt pause
 
 func _ready() -> void:
 	max_health      = 1000.0
@@ -36,11 +40,21 @@ func _ready() -> void:
 	_stomp_timer  = randf_range(2.0, stomp_cooldown)
 
 func _physics_process(delta: float) -> void:
+	_stagger_timer = maxf(0.0, _stagger_timer - delta)
+	if _stagger_timer > 0.0:
+		# Interrupt pause: cancel any active charge, gravity only, bleed off velocity
+		_is_charging = false
+		if not is_on_floor(): velocity.y -= gravity * delta
+		elif velocity.y < 0.0: velocity.y = 0.0
+		velocity.x = lerpf(velocity.x, 0.0, 10.0 * delta)
+		velocity.z = lerpf(velocity.z, 0.0, 10.0 * delta)
+		move_and_slide()
+		return
 	if _is_charging:
 		_do_charge_move(delta)
 		return
 	super._physics_process(delta)
-	if is_dead: return
+	if _is_dead: return
 	_charge_timer -= delta
 	_stomp_timer  -= delta
 	if _charge_timer <= 0.0 and is_instance_valid(target):
@@ -53,6 +67,14 @@ func _physics_process(delta: float) -> void:
 		if d <= attack_range + 1.0:
 			_stomp_timer = stomp_cooldown
 			_do_stomp()
+
+func take_damage(amount: float, source) -> void:
+	super.take_damage(amount, source)
+	if amount > max_health * STAGGER_THRESHOLD:
+		_stagger_timer = STAGGER_DURATION
+		if is_instance_valid(_anim_tree):
+			for hp: String in ["parameters/hurt_shot/request", "parameters/hit/request"]:
+				_anim_tree.set(hp, AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
 
 func _start_charge() -> void:
 	if not is_instance_valid(target): return

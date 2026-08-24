@@ -36,6 +36,8 @@ var _hook_node  : Node3D         = null
 var _arc_mesh   : ImmediateMesh  = null
 var _arc_inst   : MeshInstance3D = null
 var _sfx        : AudioStreamPlayer3D = null
+var _fire_sound   : AudioStream = preload("res://assets/sound effects/MagicSpellWhoosh_SEU03.28.wav")
+var _attach_sound : AudioStream = preload("res://audio/ESM_FG_FX_one_shot_farming_hammer_hit_metal_thin_steel_fence_post_beam_06.wav")
 
 signal cooldown_updated(remaining: float, total: float)
 signal grapple_state_changed(state_name: String)
@@ -142,6 +144,9 @@ func fire() -> void:
 	# Initial zip velocity — launch toward hook
 	_zip_vel  = ((_hook_pos - player.global_position).normalized()) * zip_speed * 0.5
 	if is_instance_valid(_hook_node): _hook_node.visible = true
+	if is_instance_valid(_sfx) and is_instance_valid(_fire_sound):
+		_sfx.stream = _fire_sound
+		_sfx.play()
 	grapple_state_changed.emit("zipping")
 
 
@@ -170,72 +175,81 @@ func _tick_zip(delta: float) -> void:
 	var to_hook : Vector3 = _hook_pos - player.global_position
 	var dist    : float   = to_hook.length()
 
-	if dist < 1.2:
-		# Reached hook — transition to attached/cling
+	if dist < 1.5:
 		_state = State.ATTACHED
-		player.velocity = player.velocity * 0.4  # bleed off speed
+		player.velocity = player.velocity * 0.5
+		if is_instance_valid(_sfx) and is_instance_valid(_attach_sound):
+			_sfx.stream = _attach_sound
+			_sfx.play()
 		grapple_state_changed.emit("attached")
 		return
 
-	# JC2 feel: accelerate hard toward hook, preserve lateral momentum
 	var toward_hook : Vector3 = to_hook.normalized()
 
-	# Strong pull toward hook
-	_zip_vel += toward_hook * zip_accel * delta * 60.0
+	# Pull force toward hook — additive, not override
+	_zip_vel += toward_hook * zip_accel * delta * 55.0
 
-	# Cap zip speed
-	if _zip_vel.length() > zip_speed:
-		_zip_vel = _zip_vel.normalized() * zip_speed
+	# Full WASD steering while being pulled (camera-relative)
+	var input_dir := Vector3.ZERO
+	if is_instance_valid(camera):
+		var cam_basis := camera.global_transform.basis
+		var fwd  := -cam_basis.z; fwd.y = 0.0
+		var rght :=  cam_basis.x; rght.y = 0.0
+		if fwd.length_squared()  > 0.001: fwd  = fwd.normalized()
+		if rght.length_squared() > 0.001: rght = rght.normalized()
+		if Input.is_key_pressed(KEY_W): input_dir += fwd
+		if Input.is_key_pressed(KEY_S): input_dir -= fwd
+		if Input.is_key_pressed(KEY_D): input_dir += rght
+		if Input.is_key_pressed(KEY_A): input_dir -= rght
+	if input_dir.length_squared() > 0.001:
+		_zip_vel += input_dir.normalized() * swing_force * 1.2 * delta
 
-	# Apply to player — override gravity while zipping
-	player.velocity = _zip_vel
-	player.velocity.y = _zip_vel.y  # allow vertical zipping
+	# Cap speed
+	if _zip_vel.length() > zip_speed * 1.4:
+		_zip_vel = _zip_vel.normalized() * zip_speed * 1.4
+
+	# Blend zip velocity with player's existing velocity for smooth control
+	player.velocity = player.velocity.lerp(_zip_vel, clampf(delta * 12.0, 0.0, 1.0))
 	player.move_and_slide()
 	_zip_vel = player.velocity
 
-	# Add swing input for strafing mid-zip (JC2 sideways movement)
-	var sw : float = 0.0
-	if Input.is_key_pressed(KEY_D): sw += 1.0
-	if Input.is_key_pressed(KEY_A): sw -= 1.0
-	if sw != 0.0:
-		var side : Vector3 = toward_hook.cross(Vector3.UP).normalized()
-		player.velocity += side * sw * swing_force * 0.4 * delta
-
 
 func _tick_attached(delta: float) -> void:
-	# Swinging from attachment point — JC2 pendulum
 	var to_hook  : Vector3 = _hook_pos - player.global_position
-	var dist     : float   = to_hook.length()
 	var rope_dir : Vector3 = to_hook.normalized()
 
-	# Gravity
-	player.velocity.y -= 16.0 * delta
+	# Gravity (slightly reduced for floaty swing feel)
+	player.velocity.y -= 13.0 * delta
 
-	# WASD adds swing force
-	var sw_x : float = 0.0
-	var sw_z : float = 0.0
-	if Input.is_key_pressed(KEY_D): sw_x += 1.0
-	if Input.is_key_pressed(KEY_A): sw_x -= 1.0
-	if Input.is_key_pressed(KEY_W): sw_z += 1.0
-	if Input.is_key_pressed(KEY_S): sw_z -= 1.0
+	# Camera-relative WASD swing — full directional control
+	if is_instance_valid(camera):
+		var cam_basis := camera.global_transform.basis
+		var fwd  := -cam_basis.z; fwd.y = 0.0
+		var rght :=  cam_basis.x; rght.y = 0.0
+		if fwd.length_squared()  > 0.001: fwd  = fwd.normalized()
+		if rght.length_squared() > 0.001: rght = rght.normalized()
+		var sw_dir := Vector3.ZERO
+		if Input.is_key_pressed(KEY_W): sw_dir += fwd
+		if Input.is_key_pressed(KEY_S): sw_dir -= fwd
+		if Input.is_key_pressed(KEY_D): sw_dir += rght
+		if Input.is_key_pressed(KEY_A): sw_dir -= rght
+		if sw_dir.length_squared() > 0.001:
+			player.velocity += sw_dir.normalized() * swing_force * 1.6 * delta
 
-	if sw_x != 0.0 or sw_z != 0.0:
-		var right   : Vector3 = rope_dir.cross(Vector3.UP).normalized()
-		var forward : Vector3 = Vector3.UP.cross(right).normalized()
-		player.velocity += (right * sw_x + forward * sw_z) * swing_force * delta
+	# Space/jump = boost upward along rope for climbing
+	if Input.is_key_pressed(KEY_SPACE):
+		player.velocity += rope_dir * zip_speed * 0.6 * delta
 
 	# Rope constraint
 	player.move_and_slide()
 	var new_to : Vector3 = _hook_pos - player.global_position
 	if new_to.length() > _rope_len:
 		player.global_position = _hook_pos - new_to.normalized() * _rope_len
-		# Remove velocity component going away from hook
 		var away := player.velocity.dot(-new_to.normalized())
-		if away > 0: player.velocity -= -new_to.normalized() * away * 0.85
+		if away > 0: player.velocity -= -new_to.normalized() * away * 0.7
 
-	# Floor bounce
 	if player.is_on_floor() and player.velocity.y < 0.0:
-		player.velocity.y = 3.0
+		player.velocity.y = 4.0
 
 
 func _tick_cling(delta: float) -> void:

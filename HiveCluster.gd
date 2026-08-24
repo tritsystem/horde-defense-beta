@@ -20,6 +20,11 @@ extends Node3D
 @export var egg_hatch_time    : float = 60.0
 @export var egg_wave_size     : int   = 6
 @export var patrol_radius     : float = 16.0
+# REAL FEATURE ADD (2026-07-21): "higher tier eggs should have higher level
+# turrets defending them" -- turret_count/turret_level, set per-tier by
+# HiveNestManager, same pattern as patrol_count/hive_hp above.
+@export var turret_count      : int   = 0
+@export var turret_level      : int   = 1
 
 # Set by HiveNestManager before adding to tree
 var attack_target : Node3D = null
@@ -33,17 +38,34 @@ var _cleared       : bool  = false
 var _patrol_units  : Array = []
 var _eggs          : Array = []
 var _hive_mat      : StandardMaterial3D = null
-var _guards_active : bool  = true
 
 var _hp_bar_root : Node3D             = null
 var _hp_fill_mi  : MeshInstance3D     = null
 var _hp_fill_mat : StandardMaterial3D = null
 var _hp_label    : Label3D            = null
 
-const GUARD_SCENE    := "res://zombie/zombie.tscn"
-const PATROL_AIMODE  := 3
-const ATTACK_AIMODE  := 1
-const LOD_GUARD_DIST : float = 200.0
+const GUARD_SCENE  := "res://zombie/zombie.tscn"
+
+# REAL BUG FIX (2026-07-25): "eggs and nests spawning in air" -- every
+# ground raycast in this file masks to collision layer 1 expecting it to be
+# terrain-only, but basenode.gd's procedural castle walls/towers never set
+# an explicit collision_layer, so they land on that SAME default layer 1
+# (the identical conflict already fixed for zombie ground-snap/LaneSpawner).
+# Cache every base's structure body RIDs once and exclude them from every
+# raycast below so they actually find real ground instead of a wall/tower top.
+var _structure_exclude : Array[RID] = []
+
+func _build_structure_exclude() -> void:
+	_structure_exclude.clear()
+	for b in get_tree().get_nodes_in_group("bases"):
+		if is_instance_valid(b):
+			_collect_body_rids_recursive(b, _structure_exclude)
+
+func _collect_body_rids_recursive(node: Node, rids: Array[RID]) -> void:
+	if node is PhysicsBody3D:
+		rids.append((node as PhysicsBody3D).get_rid())
+	for c in node.get_children():
+		_collect_body_rids_recursive(c, rids)
 
 
 func _ready() -> void:
@@ -54,34 +76,12 @@ func _ready() -> void:
 
 
 func _deferred_init() -> void:
+	_build_structure_exclude()
 	_snap_to_ground()
 	_spawn_initial_eggs()
 	_spawn_patrol_guards()
-	_schedule_guard_lod()
+	_spawn_defense_turrets()
 	_spawn_hive_heart()
-
-
-# ── Guard LOD poll (replaces _process) ───────────────────────
-func _schedule_guard_lod() -> void:
-	get_tree().create_timer(2.0).timeout.connect(_guard_lod_poll)
-
-
-func _guard_lod_poll() -> void:
-	if _cleared: return
-	_update_guard_lod()
-	_schedule_guard_lod()
-
-
-func _update_guard_lod() -> void:
-	var cam_pos : Vector3 = _get_camera_pos()
-	var dist    : float   = global_position.distance_to(cam_pos)
-	var want    : bool    = dist < LOD_GUARD_DIST
-	if want == _guards_active: return
-	_guards_active = want
-	var mode : int = Node.PROCESS_MODE_INHERIT if want else Node.PROCESS_MODE_DISABLED
-	for g in _patrol_units:
-		if is_instance_valid(g):
-			g.process_mode = mode
 
 
 func _get_camera_pos() -> Vector3:
@@ -101,6 +101,7 @@ func _snap_to_ground() -> void:
 		global_position + Vector3.UP * 120.0,
 		global_position + Vector3.DOWN * 60.0)
 	ray.collision_mask = 1
+	ray.exclude = _structure_exclude
 	var hit := space.intersect_ray(ray)
 	if not hit.is_empty():
 		global_position.y = hit.position.y
@@ -150,6 +151,10 @@ func _build_glow_ring(r: float) -> void:
 	mat.transparency     = BaseMaterial3D.TRANSPARENCY_ALPHA
 	ring.material_override = mat
 	ring.position.y      = 0.06
+	# REAL PERF FIX (2026-07-23): alpha-blended emissive rings casting
+	# shadows is both wasted GPU cost and visually wrong (a glow ring
+	# shouldn't occlude light) -- with up to 8 clusters active this adds up.
+	ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(ring)
 
 
@@ -197,6 +202,7 @@ func _build_hp_display(r: float) -> void:
 	bg_mat.shading_mode   = BaseMaterial3D.SHADING_MODE_UNSHADED
 	bg_mat.no_depth_test  = true
 	bg_mi.material_override = bg_mat
+	bg_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_hp_bar_root.add_child(bg_mi)
 
 	# Fill
@@ -210,6 +216,7 @@ func _build_hp_display(r: float) -> void:
 	_hp_fill_mat.shading_mode   = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_hp_fill_mat.no_depth_test  = true
 	_hp_fill_mi.material_override = _hp_fill_mat
+	_hp_fill_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_hp_bar_root.add_child(_hp_fill_mi)
 
 
@@ -247,6 +254,7 @@ func _spawn_single_egg() -> void:
 	var ray := PhysicsRayQueryParameters3D.create(
 		wpos + Vector3.UP * 60.0, wpos + Vector3.DOWN * 30.0)
 	ray.collision_mask = 1
+	ray.exclude = _structure_exclude
 	var hit := space.intersect_ray(ray)
 	if not hit.is_empty(): wpos.y = hit.position.y
 
@@ -269,35 +277,102 @@ func _spawn_patrol_guards() -> void:
 	if not ResourceLoader.exists(GUARD_SCENE):
 		push_warning("[HiveCluster] Guard scene not found: %s" % GUARD_SCENE)
 		return
-	var guard_scene : PackedScene    = load(GUARD_SCENE)
-	var circle      : Array[Vector3] = _patrol_circle(global_position, patrol_radius, max(8, patrol_count * 2))
-	var space       := get_world_3d().direct_space_state
+
+	var packed : PackedScene      = load(GUARD_SCENE)
+	var circle : Array[Vector3]   = _patrol_circle(global_position, patrol_radius, max(8, patrol_count * 2))
+	var space                     := get_world_3d().direct_space_state
+	var zhm                       := get_node_or_null("/root/ZombieHordeManager")
 
 	for i in patrol_count:
+		# REAL BUG FIX (2026-07-24, severe): no check against ZombieHordeManager's
+		# ZONE1_MAX -- with up to 8 clusters each spawning up to 4 guards, this
+		# uncapped addition to the full-cost physics zombie tier was a real
+		# contributor to severe FPS loss (see register_z1's own fix note).
+		if is_instance_valid(zhm) and zhm.has_method("can_register_z1") and not zhm.can_register_z1():
+			break
 		var angle     : float   = (float(i) / float(patrol_count)) * TAU
-		var spawn_pos : Vector3 = global_position + Vector3(cos(angle) * patrol_radius * 0.6, 0.5, sin(angle) * patrol_radius * 0.6)
+		var spawn_pos : Vector3 = global_position + Vector3(
+			cos(angle) * patrol_radius * 0.6, 0.5, sin(angle) * patrol_radius * 0.6)
 
 		var ray := PhysicsRayQueryParameters3D.create(
 			spawn_pos + Vector3.UP * 30.0, spawn_pos + Vector3.DOWN * 15.0)
 		ray.collision_mask = 1
+		ray.exclude = _structure_exclude
 		var hit := space.intersect_ray(ray)
 		if not hit.is_empty(): spawn_pos.y = hit.position.y + 0.3
 
-		var guard : Node = guard_scene.instantiate()
-		if "team_id"       in guard: guard.set("team_id",       2)
-		if "ai_mode"       in guard: guard.set("ai_mode",       PATROL_AIMODE)
-		if "enemy_base"    in guard and is_instance_valid(attack_target):
-			guard.set("enemy_base", attack_target)
-		if "patrol_points" in guard: guard.set("patrol_points", circle)
-		if "max_health"    in guard: guard.set("max_health",    180.0 + tier * 90.0)
-		if "health"        in guard: guard.set("health",        180.0 + tier * 90.0)
-		if "move_speed"    in guard: guard.set("move_speed",    2.2   + tier * 0.35)
-		if "damage"        in guard: guard.set("damage",        12.0  + tier * 9.0)
-		if "gold_reward"   in guard: guard.set("gold_reward",   15    + tier * 8)
+		var guard : Node = packed.instantiate()
+		if not is_instance_valid(guard): continue
+
+		if "team_id"        in guard: guard.set("team_id",        2)
+		if "max_health"     in guard: guard.set("max_health",     180.0 + tier * 90.0)
+		if "health"         in guard: guard.set("health",         180.0 + tier * 90.0)
+		if "move_speed"     in guard: guard.set("move_speed",     2.8   + tier * 0.3)
+		if "damage"         in guard: guard.set("damage",         12.0  + tier * 9.0)
+		if "gold_reward"    in guard: guard.set("gold_reward",    15    + tier * 8)
+		if "detection_range" in guard: guard.set("detection_range", 30.0 + tier * 3.0)
+		if "patrol_points"  in guard: guard.set("patrol_points",  circle)
+		if is_instance_valid(attack_target):
+			if "enemy_base"   in guard: guard.set("enemy_base",   attack_target)
+			if "friendly_base" in guard: guard.set("friendly_base", self)
 
 		get_tree().current_scene.add_child(guard)
-		if guard is Node3D: (guard as Node3D).global_position = spawn_pos
+		guard.global_position = spawn_pos
+
+		# REAL BUG FIX (2026-07-25): setting ai_mode directly has no effect --
+		# the zombie's own _tick_full() only dispatches on ai_mode when a real
+		# squad_order is active; with none, every guard just fell through to
+		# the default LANE_PUSH march and left the hive instead of patrolling.
+		# command_patrol() sets both squad_order and ai_mode together, and
+		# marks it persistent so it doesn't expire after 1s like a normal
+		# player-issued order.
+		if guard.has_method("command_patrol"): guard.call("command_patrol", true)
+
+		# Register with ZHM for LOD + player/neighbor push
+		if is_instance_valid(zhm) and guard is CharacterBody3D:
+			zhm.register_z1(guard as CharacterBody3D)
+
 		_patrol_units.append(guard)
+
+
+# ── Defense turrets (higher tier = more, stronger) ────────────
+const TURRET_SCENE := "res://scenes/fire_turret.tscn"
+
+func _spawn_defense_turrets() -> void:
+	if turret_count <= 0: return
+	if not ResourceLoader.exists(TURRET_SCENE):
+		push_warning("[HiveCluster] Turret scene not found: %s" % TURRET_SCENE)
+		return
+
+	var packed : PackedScene = load(TURRET_SCENE)
+	var space  := get_world_3d().direct_space_state
+
+	for i in turret_count:
+		var angle     : float   = (float(i) / float(turret_count)) * TAU + (TAU / (turret_count * 2.0))
+		var spawn_pos : Vector3 = global_position + Vector3(
+			cos(angle) * patrol_radius * 0.85, 0.5, sin(angle) * patrol_radius * 0.85)
+
+		var ray := PhysicsRayQueryParameters3D.create(
+			spawn_pos + Vector3.UP * 30.0, spawn_pos + Vector3.DOWN * 15.0)
+		ray.collision_mask = 1
+		ray.exclude = _structure_exclude
+		var hit := space.intersect_ray(ray)
+		if not hit.is_empty(): spawn_pos.y = hit.position.y
+
+		var turret : Node = packed.instantiate()
+		if not is_instance_valid(turret): continue
+
+		if "team_id" in turret: turret.set("team_id", 2)
+		if "hostile_to_players" in turret: turret.set("hostile_to_players", true)
+
+		get_tree().current_scene.add_child(turret)
+		if turret is Node3D: (turret as Node3D).global_position = spawn_pos
+
+		# Scale it to turret_level via the turret's own real upgrade() path
+		# (same stat scaling player-owned turrets use), not a stat hack.
+		if turret.has_method("upgrade"):
+			for _lvl in range(turret_level - 1):
+				turret.call("upgrade")
 
 
 func _patrol_circle(center: Vector3, radius: float, points: int) -> Array[Vector3]:
@@ -324,7 +399,15 @@ func _on_hive_killed() -> void:
 	print("[Hive T%d] Hive destroyed!" % tier)
 	for g in _patrol_units:
 		if is_instance_valid(g) and "ai_mode" in g:
-			g.set("ai_mode", ATTACK_AIMODE)
+			g.set("ai_mode", 1)   # AIMode.ATTACK — guards assault after hive dies
+	# REAL FIX (2026-07-25): egg destruction already spawns a retaliation burst
+	# (Egg.gd take_damage(), wave_size*3 + (tier-1)*2), but destroying the
+	# whole nest/hive itself spawned nothing extra beyond surviving guards
+	# switching to ATTACK — killing the nest was a free win with no
+	# retaliation at all. Mirror the egg's retaliation scaling here using the
+	# same _spawn_extra_zombies() helper the Hive Heart channel already uses.
+	var retaliation_count : int = 6 + (tier - 1) * 3
+	_spawn_extra_zombies(retaliation_count)
 	_reveal_on_map(60.0)
 	_check_cleared()
 
@@ -339,7 +422,33 @@ func _on_egg_gone(egg: Node3D) -> void:
 	_eggs.erase(egg)
 	_check_cleared()
 	if not _cleared and health > 0.0 and _eggs.size() < max_eggs:
-		get_tree().create_timer(egg_spawn_interval).timeout.connect(_spawn_single_egg)
+		get_tree().create_timer(egg_spawn_interval).timeout.connect(_try_respawn_egg)
+
+
+# REAL BUG FIX (2026-08-06): "zombies pool up far away and don't trigger
+# until I get close, lots of zombies makes the game lag" -- eggs hatch
+# unconditionally now regardless of player proximity (Egg.gd's 2026-07-25
+# fix, so no egg stays dormant forever), but this cluster kept manufacturing
+# a brand-new egg every egg_spawn_interval FOREVER, with zero regard for
+# whether the player was anywhere near this nest. A tier-4/5 cluster the
+# player hasn't reached yet would perpetually pump fresh full-cost hive_unit
+# waves for the entire match, continuously refilling a far-away pool of
+# zombies that just sit there marching toward the player base, unseen,
+# eating the shared Zone-1 physics budget the whole time (see MAX_HIVE_UNITS'
+# note in Egg.gd). Gate ongoing REGENERATION -- not the first-ever hatch,
+# which must stay unconditional -- behind proximity: a distant nest's
+# initial egg(s) still always hatch once, but it stops manufacturing new
+# ones until the player is actually closing in on it. _get_camera_pos() was
+# already defined above for exactly this kind of check but previously unused.
+const EGG_RESPAWN_ACTIVATION_DIST : float = 220.0
+
+func _try_respawn_egg() -> void:
+	if _cleared or health <= 0.0 or _eggs.size() >= max_eggs:
+		return
+	if global_position.distance_to(_get_camera_pos()) > EGG_RESPAWN_ACTIVATION_DIST:
+		get_tree().create_timer(10.0).timeout.connect(_try_respawn_egg)
+		return
+	_spawn_single_egg()
 
 
 func _check_cleared() -> void:
@@ -441,13 +550,32 @@ func _activate_heart_buff(player: Node) -> void:
 
 
 func _spawn_extra_zombies(count: int) -> void:
-	if not ResourceLoader.exists("res://zombie/zombie.tscn"): return
-	var packed : PackedScene = load("res://zombie/zombie.tscn")
+	if not ResourceLoader.exists(GUARD_SCENE): return
+	var packed : PackedScene = load(GUARD_SCENE)
+	var space  := get_tree().root.get_world_3d().direct_space_state
+	var zhm    := get_node_or_null("/root/ZombieHordeManager")
 	for _i in count:
-		var z := packed.instantiate()
-		if "team_id" in z: z.set("team_id", 2)
-		if "enemy_base" in z and is_instance_valid(attack_target):
-			z.set("enemy_base", attack_target)
-		get_tree().current_scene.add_child(z)
-		if z is Node3D:
-			(z as Node3D).global_position = global_position + Vector3(randf_range(-4,4), 0.5, randf_range(-4,4))
+		# REAL BUG FIX (2026-07-24, severe): same uncapped Zone-1 spawn bug
+		# as _spawn_patrol_guards -- see that function's note.
+		if is_instance_valid(zhm) and zhm.has_method("can_register_z1") and not zhm.can_register_z1():
+			break
+		var g : Node = packed.instantiate()
+		if not is_instance_valid(g): continue
+		if "team_id"     in g: g.set("team_id",     2)
+		if "ai_mode"     in g: g.set("ai_mode",     1)   # AIMode.ATTACK
+		if "enemy_base"  in g: g.set("enemy_base",  attack_target if is_instance_valid(attack_target) else null)
+		if "friendly_base" in g: g.set("friendly_base", self)
+		var rx    := randf_range(-4.0, 4.0)
+		var rz    := randf_range(-4.0, 4.0)
+		var spawn := global_position + Vector3(rx, 0.5, rz)
+		if is_instance_valid(space):
+			var ray := PhysicsRayQueryParameters3D.create(
+				Vector3(spawn.x, 200.0, spawn.z), Vector3(spawn.x, -50.0, spawn.z))
+			ray.collision_mask = 1
+			ray.exclude = _structure_exclude
+			var hit := space.intersect_ray(ray)
+			if not hit.is_empty(): spawn.y = hit.position.y + 0.5
+		get_tree().current_scene.add_child(g)
+		if g is Node3D: (g as Node3D).global_position = spawn
+		if is_instance_valid(zhm) and g is CharacterBody3D:
+			zhm.register_z1(g as CharacterBody3D)

@@ -7,6 +7,7 @@ extends Node
 signal quest_completed(quest: Dictionary, player_id: int)
 signal quest_progress(quest: Dictionary, player_id: int, current: int)
 signal new_quest_available(quest: Dictionary)
+signal ally_choice_available(player_id: int)
 
 const QUEST_POOL : Array = [
 	# Zombie kills
@@ -30,6 +31,12 @@ const QUEST_POOL : Array = [
 	{"id":"kill_30s",    "label":"Blitz",              "type":"kills_in_time",  "target":3,   "reward_gold":180, "reward_crystals":7,  "icon":"⚡", "window":30.0},
 	# Squad
 	{"id":"squad_10",    "label":"Commander",          "type":"squad_kills",    "target":10,  "reward_gold":200, "reward_crystals":8,  "icon":"🧠"},
+	# Ally choice -- reward_type "ally_choice" is handled specially in
+	# _complete_quest(): instead of auto-granting gold/crystals, it emits
+	# ally_choice_available so a UI can offer the player a choice between
+	# a pack of rats (loot-scavenging + bonus damage) or a pack of bats
+	# (vampiric healing). See rat_ally.gd / bat_ally.gd.
+	{"id":"ally_choice", "label":"Call of the Wild",   "type":"zombie_kills",   "target":15,  "reward_gold":0,   "reward_crystals":0,  "icon":"🐾", "reward_type":"ally_choice"},
 ]
 
 # Active quests per player_id
@@ -81,16 +88,22 @@ func _complete_quest(pid: int, q: Dictionary) -> void:
 	_active[pid].erase(q)
 	_completed[pid].append(q["id"])
 	quest_completed.emit(q, pid)
-	# Give rewards
-	var gm := get_tree().get_first_node_in_group("game_manager")
-	if is_instance_valid(gm) and gm.has_method("add_gold"):
-		gm.add_gold(pid, q.get("reward_gold", 0))  # pid used as team_id approximation
-	# Give crystals to player
-	for p in get_tree().get_nodes_in_group("player"):
-		if "player_id" in p and int(p.get("player_id")) == pid:
-			if p.has_method("add_crystal"):
-				p.add_crystal(q.get("reward_crystals", 0))
-			break
+
+	if q.get("reward_type", "") == "ally_choice":
+		# Special reward -- no flat gold/crystals, let a UI (AllyChoiceUI)
+		# handle the actual choice + spawn.
+		ally_choice_available.emit(pid)
+	else:
+		# Give rewards
+		var gm := get_tree().get_first_node_in_group("game_manager")
+		if is_instance_valid(gm) and gm.has_method("add_gold"):
+			gm.add_gold(pid, q.get("reward_gold", 0))  # pid used as team_id approximation
+		# Give crystals to player
+		for p in get_tree().get_nodes_in_group("player"):
+			if "player_id" in p and int(p.get("player_id")) == pid:
+				if p.has_method("add_crystal"):
+					p.add_crystal(q.get("reward_crystals", 0))
+				break
 	# Assign new quest to replace
 	get_tree().create_timer(2.0).timeout.connect(func(): _assign_quests(pid))
 

@@ -8,24 +8,11 @@
 # Usage: instantiate like any zombie; swap script on existing node
 #        OR use as a separate scene extending zombie.tscn.
 # ============================================================
-extends Node   # will be set_script-injected onto a zombie node
+class_name GlowingZombie
+extends RefCounted
 
 
 const GLOW_COLOR : Color = Color(0.2, 1.0, 0.5)
-
-func _apply_glow(zombie: Node) -> void:
-	if not (zombie is Node3D): return
-	# Override all mesh materials to glow
-	for mi in (zombie as Node3D).find_children("*", "MeshInstance3D", true, false):
-		if not (mi is MeshInstance3D): continue
-		var mat := (mi as MeshInstance3D).get_active_material(0)
-		if mat is StandardMaterial3D:
-			var gmat := mat.duplicate() as StandardMaterial3D
-			gmat.emission_enabled = true
-			gmat.emission         = GLOW_COLOR * 1.5
-			(mi as MeshInstance3D).material_override = gmat
-	# Scale up slightly
-	(zombie as Node3D).scale = Vector3.ONE * 1.15
 
 
 static func make_glowing(zombie: Node) -> void:

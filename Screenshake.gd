@@ -36,6 +36,9 @@ func land()         -> void: shake(0.18, 0.10, 18.0)
 func sword_hit()    -> void: shake(0.35, 0.18, 16.0)
 func base_hit()     -> void: shake(1.2, 0.6, 8.0)
 func gun_shot()     -> void: shake(0.08, 0.06, 22.0)
+func death_impulse() -> void: shake(0.6, 0.12, 24.0)
+func enemy_death(max_hp: float) -> void:
+	shake(clampf(max_hp / 1000.0 * 0.3, 0.08, 0.40), 0.15, 20.0)
 
 func _process(delta: float) -> void:
 	if not is_instance_valid(_camera): set_process(false); return

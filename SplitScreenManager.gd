@@ -45,8 +45,43 @@ func _ready() -> void:
 	root_ctrl.set_anchors_preset(Control.PRESET_FULL_RECT)
 	canvas.add_child(root_ctrl)
 
+	# Detect controller connections and reassign devices
+	Input.joy_connection_changed.connect(_on_joy_connection_changed)
+
 	await get_tree().process_frame
 	await _boot()
+
+
+func _on_joy_connection_changed(device_id: int, connected: bool) -> void:
+	if connected:
+		print("[SSM] Controller connected: device %d" % device_id)
+		for i in _devices.size():
+			if _devices[i] == -99:
+				_devices[i] = device_id
+				var pid : int = i + 1
+				if i < _players.size() and is_instance_valid(_players[i]):
+					_players[i].set("device_id", device_id)
+				# Register new InputMap actions for this player+device
+				var inp := get_node_or_null("/root/inputsetup")
+				if not is_instance_valid(inp): inp = get_node_or_null("inputsetup")
+				if is_instance_valid(inp) and inp.has_method("setup_player_inputs"):
+					inp.setup_player_inputs(pid, device_id)
+				print("[SSM] Assigned controller %d → P%d, InputMap updated" % [device_id, pid])
+				return
+	else:
+		print("[SSM] Controller disconnected: device %d" % device_id)
+		for i in _devices.size():
+			if _devices[i] == device_id:
+				_devices[i] = -99
+				var pid : int = i + 1
+				if i < _players.size() and is_instance_valid(_players[i]):
+					_players[i].set("device_id", -99)
+				# Register empty actions so _act() doesn't crash
+				var inp := get_node_or_null("/root/inputsetup")
+				if not is_instance_valid(inp): inp = get_node_or_null("inputsetup")
+				if is_instance_valid(inp) and inp.has_method("setup_player_inputs"):
+					inp.setup_player_inputs(pid, -99)
+				print("[SSM] P%d lost controller" % pid)
 
 
 func _exit_tree() -> void:
@@ -58,12 +93,43 @@ func _exit_tree() -> void:
 # Mouse events: NOT intercepted — SubViewportContainer.stretch=true
 # maps mouse coordinates correctly into sub-viewports automatically.
 # Keyboard → P1 viewport only. Gamepad → owning player viewport only.
+# Mouse clicks → forwarded to the SubViewport whose shop is open (for GUI).
 func _input(event: InputEvent) -> void:
-	if event is InputEventMouseButton or event is InputEventMouseMotion \
-	   or event is InputEventMagnifyGesture or event is InputEventPanGesture:
+	if event is InputEventMagnifyGesture or event is InputEventPanGesture:
+		return
+
+	var shop_active := false
+	for shop in get_tree().get_nodes_in_group("shop"):
+		if is_instance_valid(shop) and shop.get("_state") != null:
+			if int(shop.get("_state")) == 1: shop_active = true; break
+
+	if event is InputEventMouseButton or event is InputEventMouseMotion:
+		# In Godot 4, SubViewportContainer with stretch=true + mouse_filter=PASS
+		# automatically routes mouse events to the SubViewport the mouse is over,
+		# transforming coordinates correctly. We rely on this natural routing.
+		# Only override for SubViewports whose containers have MOUSE_FILTER_IGNORE
+		# (gamepad players) when their shop is open and needs GUI input.
+		if shop_active and event is InputEventMouseButton:
+			for i in _viewports.size():
+				var vp := _viewports[i]
+				if not is_instance_valid(vp): continue
+				# Only push to the SubViewport with an open shop AND
+				# whose container has IGNORE (would otherwise miss the event)
+				if i < _containers.size() and is_instance_valid(_containers[i]):
+					if (_containers[i] as Control).mouse_filter == Control.MOUSE_FILTER_IGNORE:
+						var vp_shop_open := false
+						for shop in get_tree().get_nodes_in_group("shop"):
+							if is_instance_valid(shop) and vp.is_ancestor_of(shop) \
+									and shop.get("_state") != null:
+								if int(shop.get("_state")) == 1: vp_shop_open = true; break
+						if vp_shop_open:
+							vp.push_input(event)
+							get_viewport().set_input_as_handled()
 		return
 
 	if event is InputEventKey:
+		# Route to KBM player's SubViewport only (always P1).
+		# Deck/class UI inside each SubViewport receives keys through their own push.
 		var idx := _device_to_player_idx(-1)
 		if idx >= 0 and idx < _viewports.size() and is_instance_valid(_viewports[idx]):
 			_viewports[idx].push_input(event)
@@ -298,6 +364,28 @@ func _spawn_player(idx: int, vp: SubViewport) -> void:
 			print("[SSM] P%d HUD bound ✓" % pid)
 		else:
 			push_error("[SSM] P%d HUD bind failed" % pid)
+		# REAL BUG FIX (2026-07-21): ui.tscn has a SEPARATE "questhud" node
+		# (questhud.gd) with its OWN independent bind_player() -- but the
+		# lookup above stops at the FIRST node with a bind_player method
+		# (canvas_layer.gd's Control root), so questhud's bind_player was
+		# NEVER called. Without it, QuestHUD's _player_id stays 0 and
+		# quests are never registered/refreshed for the real player --
+		# confirmed live: "I don't see any quests". Bind every OTHER node
+		# with its own bind_player() too (not just the first one found).
+		var all_bindable : Array = []
+		_find_all_with_method(hud_root, "bind_player", all_bindable)
+		for extra_hud in all_bindable:
+			if extra_hud == hud: continue
+			var required_args := -1
+			for m in extra_hud.get_method_list():
+				if m.name == "bind_player":
+					required_args = m.args.size() - m.default_args.size()
+					break
+			if required_args != 1:
+				print("[SSM] P%d skipped extra HUD (%s) bind_player -- needs %d arg(s), not 1" % [pid, extra_hud.name, required_args])
+				continue
+			extra_hud.bind_player(player)
+			print("[SSM] P%d extra HUD (%s) bound ✓" % [pid, extra_hud.name])
 		var shop := hud_root.get_node_or_null("Control/SHOPUI")
 		if not is_instance_valid(shop): shop = _find_first_with_method(hud_root, "open_shop")
 		if is_instance_valid(shop) and player.has_method("bind_shop"):
@@ -417,16 +505,29 @@ func _spawn_pos_for_team(tid: int) -> Vector3:
 	var valid : Array[Node3D] = spawn_points.filter(func(s): return is_instance_valid(s))
 	if not valid.is_empty():
 		return _ground_snap(valid[clampi(tid-1,0,valid.size()-1)].global_position)
+	# Find bases — use a larger offset to ensure player spawns outside castle walls
+	# Castle walls are roughly 14–16 units from base centre; use 20 to be safe
 	for b in get_tree().get_nodes_in_group("bases"):
 		if is_instance_valid(b) and "team_id" in b and int(b.get("team_id")) == tid:
-			return _ground_snap((b as Node3D).global_position + Vector3(0,2,5))
+			var base_pos : Vector3 = (b as Node3D).global_position
+			# Push forward (toward enemy base) to get outside own walls
+			var other_base : Node3D = null
+			for ob in get_tree().get_nodes_in_group("bases"):
+				if is_instance_valid(ob) and "team_id" in ob and int(ob.get("team_id")) != tid:
+					other_base = ob as Node3D; break
+			var push_dir := Vector3(0, 0, 1)
+			if is_instance_valid(other_base):
+				push_dir = (other_base.global_position - base_pos)
+				push_dir.y = 0.0
+				if push_dir.length_squared() > 0.01: push_dir = push_dir.normalized()
+			return _ground_snap(base_pos + push_dir * 20.0)
 	var names := ["Base","Base1","PlayerBase"] if tid==1 else ["Base2","Base 2","EnemyBase"]
 	for bname in names:
 		var bn := get_tree().root.find_child(bname, true, false)
 		if is_instance_valid(bn) and bn is Node3D:
-			return _ground_snap((bn as Node3D).global_position + Vector3(0,2,5))
+			return _ground_snap((bn as Node3D).global_position + Vector3(0, 2, 20))
 	push_warning("[SSM] No spawn for team %d" % tid)
-	return Vector3(float(tid-1)*8, 2, 0)
+	return Vector3(float(tid-1)*20, 2, 0)
 
 
 func _ground_snap(pos: Vector3) -> Vector3:
@@ -525,6 +626,22 @@ func get_device_for_player(player_idx: int) -> int:
 	return _devices[player_idx] if player_idx >= 0 and player_idx < _devices.size() else -99
 
 
+func get_player_viewport(player_idx: int) -> SubViewport:
+	if player_idx >= 0 and player_idx < _viewports.size():
+		return _viewports[player_idx]
+	return null
+
+
+func set_all_containers_mouse_pass(enabled: bool) -> void:
+	for c in _containers:
+		if is_instance_valid(c):
+			c.mouse_filter = Control.MOUSE_FILTER_PASS if enabled else Control.MOUSE_FILTER_IGNORE
+	# Always restore KBM player's container to PASS
+	var kbm_idx := _device_to_player_idx(-1)
+	if kbm_idx >= 0 and kbm_idx < _containers.size() and is_instance_valid(_containers[kbm_idx]):
+		_containers[kbm_idx].mouse_filter = Control.MOUSE_FILTER_PASS
+
+
 ## Warp the OS cursor to the centre of a player's screen quadrant.
 ## Call when opening a KBM-accessible UI (shop, class select) so the
 ## cursor starts inside that player's half of the screen.
@@ -540,9 +657,15 @@ func _find_camera(node: Node) -> Camera3D:
 		var c := _find_camera(child); if is_instance_valid(c): return c
 	return null
 
-func _find_first_with_method(node: Node, method: String) -> Node:
-	if node.has_method(method): return node
+func _find_first_with_method(node: Node, method: String, exclude: Node = null) -> Node:
+	if node != exclude and node.has_method(method): return node
 	for child in node.get_children():
-		var found := _find_first_with_method(child, method)
+		var found := _find_first_with_method(child, method, exclude)
 		if is_instance_valid(found): return found
 	return null
+
+
+func _find_all_with_method(node: Node, method: String, out: Array) -> void:
+	if node.has_method(method): out.append(node)
+	for child in node.get_children():
+		_find_all_with_method(child, method, out)

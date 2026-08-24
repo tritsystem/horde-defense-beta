@@ -319,6 +319,8 @@ var neighbors_cache : Array = []
 # ============================================================
 
 var lod : LOD = LOD.FULL
+var _body_meshes : Array[MeshInstance3D] = []
+var _mesh_near   : bool = true   # true = shadows on, false = shadows off
 
 # ============================================================
 # STATE
@@ -714,6 +716,9 @@ func _ready() -> void:
 
 	anim_tree = _find_anim_tree()
 
+	for m in find_children("*", "MeshInstance3D", true, false):
+		_body_meshes.append(m as MeshInstance3D)
+
 	_find_bases()
 
 	_build_health_bar()
@@ -741,13 +746,16 @@ func _ready() -> void:
 # ============================================================
 
 func _setup_audio() -> void:
-
+	# REAL BUG FIX (2026-07-21): same fix as zombie.gd -- route to the
+	# pre-attenuated "zombie fx" bus instead of the unattenuated default.
 	sfx = AudioStreamPlayer3D.new()
 	sfx.max_distance = 25.0
+	sfx.bus = "zombie fx"
 	add_child(sfx)
 
 	sfx_ability = AudioStreamPlayer3D.new()
 	sfx_ability.max_distance = 30.0
+	sfx_ability.bus = "zombie fx"
 	add_child(sfx_ability)
 
 # ============================================================
@@ -1578,7 +1586,7 @@ func _try_attack(t: Node3D) -> void:
 
 	attack_timer = attack_cooldown
 
-	_play_sound(attack_sounds, 5.0)
+	_play_sound(attack_sounds, 5.0, "zombie_attack")
 
 	if anim_tree != null:
 		anim_tree.set(
@@ -2156,7 +2164,7 @@ func _tick_elite_ability(delta: float) -> void:
 
 func _fire_elite_ability() -> void:
 
-	_play_sound_on(sfx_ability, ability_sounds, 7.0)
+	_play_sound_on(sfx_ability, ability_sounds, 7.0, "zombie_ability")
 
 	match elite_ability:
 
@@ -2937,7 +2945,8 @@ func _update_animation() -> void:
 
 func _play_sound(
 	arr: Array,
-	volume: float
+	volume: float,
+	category: String = ""
 ) -> void:
 
 	if not audio_enabled:
@@ -2958,6 +2967,11 @@ func _play_sound(
 	if valid.is_empty():
 		return
 
+	if category != "":
+		var am := get_node_or_null("/root/AudioManager")
+		if is_instance_valid(am) and not am.claim_voice(category, sfx):
+			return
+
 	sfx.stream = valid.pick_random()
 	sfx.volume_db = volume
 	sfx.pitch_scale = randf_range(0.92, 1.08)
@@ -2970,7 +2984,8 @@ func _play_sound(
 func _play_sound_on(
 	player: AudioStreamPlayer3D,
 	arr: Array,
-	volume: float
+	volume: float,
+	category: String = ""
 ) -> void:
 
 	if not audio_enabled:
@@ -2990,6 +3005,11 @@ func _play_sound_on(
 
 	if valid.is_empty():
 		return
+
+	if category != "":
+		var am := get_node_or_null("/root/AudioManager")
+		if is_instance_valid(am) and not am.claim_voice(category, player):
+			return
 
 	player.stream = valid.pick_random()
 	player.volume_db = volume
@@ -3175,6 +3195,14 @@ func set_lod(level: int) -> void:
 		2:
 			lod = LOD.SLEEP
 			set_physics_process(false)
+
+func set_mesh_near(near: bool) -> void:
+	if _mesh_near == near: return
+	_mesh_near = near
+	var shadow := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if near \
+		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for m in _body_meshes:
+		if is_instance_valid(m): m.cast_shadow = shadow
 
 func reset(pos: Vector3) -> void:
 

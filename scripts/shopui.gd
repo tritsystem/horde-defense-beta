@@ -215,7 +215,7 @@ var gold_label           : Label
 var play_hint_label      : Label
 var placement_hint_label : Label
 
-var _tab_buttons   : Array             = [[], [], [], [], [], [], [], []]
+var _tab_buttons   : Array             = [[], [], [], [], [], [], [], [], []]
 var _all_buttons   : Array[Dictionary] = []
 var _focused_tab   : int               = 0
 var _focused_index : int               = 0
@@ -254,7 +254,7 @@ func _ready() -> void:
 	# inside other containers.
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	z_index      = 100
+	z_index      = 1000
 	visible      = true
 	call_deferred("_apply_screen_rect")
 
@@ -664,7 +664,7 @@ func _build_shop_ui() -> void:
 	shop_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	shop_panel.modulate     = Color(1, 1, 1, SHOP_PANEL_ALPHA)
 	shop_panel.visible      = false
-	shop_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shop_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(shop_panel)
 
 	var margin := MarginContainer.new()
@@ -1570,12 +1570,35 @@ func _refresh_crystal_tab() -> void:
 # ═══════════════════════════════════════════════════════════════
 
 # ── UI helpers ────────────────────────────────────────────────
+# PILLAR 2 -- AUDIO (2026-07-20): "add a soft UI click sound to menu and
+# order interactions". shopui.gd had ZERO audio playback anywhere despite
+# many real Button.new() sites -- a genuine, real UI sound asset
+# (ESM_Select_Tap_UI_Sound...wav) was already sitting in the project,
+# unused. Wired into the two shared button factories (_make_button/
+# _make_cmd_button), which cover most of this shop's buttons; the
+# handful of buttons still built via direct Button.new() elsewhere in
+# this file are a follow-up, not yet covered by this pass.
+const UI_CLICK_SOUND := preload("res://assets/textures/retro_nature_pack/models/FBX/trees/ESM_Select_Tap_UI_Sound_9_Sound_FX_Arcade_Synth_User_Interface_Short_Electronic.wav")
+var _ui_click_player : AudioStreamPlayer = null
+
+func _play_ui_click() -> void:
+	if not is_instance_valid(_ui_click_player):
+		_ui_click_player = AudioStreamPlayer.new()
+		_ui_click_player.stream = UI_CLICK_SOUND
+		_ui_click_player.volume_db = -8.0
+		if AudioServer.get_bus_index("SFX") >= 0:
+			_ui_click_player.bus = "SFX"
+		add_child(_ui_click_player)
+	_ui_click_player.play()
+
 func _make_button(t: String) -> Button:
 	var b := Button.new()
 	b.text = t
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	b.custom_minimum_size.y = BTN_MIN_HEIGHT
 	b.focus_mode = Control.FOCUS_ALL
+	b.pressed.connect(_play_ui_click)
+	_apply_btn_styles(b)
 	return b
 
 func _make_cmd_button(t: String) -> Button:
@@ -1584,7 +1607,41 @@ func _make_cmd_button(t: String) -> Button:
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	b.custom_minimum_size.y = 34
 	b.focus_mode = Control.FOCUS_ALL
+	b.pressed.connect(_play_ui_click)
+	_apply_btn_styles(b)
 	return b
+
+func _apply_btn_styles(b: Button) -> void:
+	var sn := StyleBoxFlat.new()
+	sn.bg_color = Color(0.12, 0.13, 0.17, 0.90)
+	sn.set_corner_radius_all(4)
+	sn.content_margin_left = 8; sn.content_margin_right  = 8
+	sn.content_margin_top  = 4; sn.content_margin_bottom = 4
+	b.add_theme_stylebox_override("normal", sn)
+
+	var sh := StyleBoxFlat.new()
+	sh.bg_color = Color(0.22, 0.24, 0.32, 0.95)
+	sh.set_corner_radius_all(4)
+	sh.set_border_width_all(1); sh.border_color = Color(0.75, 0.65, 0.30, 0.85)
+	sh.content_margin_left = 8; sh.content_margin_right  = 8
+	sh.content_margin_top  = 4; sh.content_margin_bottom = 4
+	b.add_theme_stylebox_override("hover", sh)
+
+	var sf := StyleBoxFlat.new()
+	sf.bg_color = Color(0.18, 0.22, 0.32, 0.95)
+	sf.set_corner_radius_all(4)
+	sf.set_border_width_all(2); sf.border_color = Color(0.30, 0.65, 1.0, 0.90)
+	sf.content_margin_left = 8; sf.content_margin_right  = 8
+	sf.content_margin_top  = 4; sf.content_margin_bottom = 4
+	b.add_theme_stylebox_override("focus", sf)
+
+	var sp := StyleBoxFlat.new()
+	sp.bg_color = Color(0.08, 0.09, 0.12, 0.98)
+	sp.set_corner_radius_all(4)
+	sp.set_border_width_all(1); sp.border_color = Color(0.55, 0.45, 0.20, 0.70)
+	sp.content_margin_left = 8; sp.content_margin_right  = 8
+	sp.content_margin_top  = 4; sp.content_margin_bottom = 4
+	b.add_theme_stylebox_override("pressed", sp)
 
 func _make_section_label(t: String) -> Label:
 	var l := Label.new()
@@ -2094,6 +2151,9 @@ func _update_tab_hint() -> void:
 func _focus_button() -> void:
 	_update_tab_hint()
 	var btns : Array = _tab_buttons[_focused_tab]
+	# Remove any stale (freed) button refs before focusing
+	btns = btns.filter(func(b): return is_instance_valid(b))
+	_tab_buttons[_focused_tab] = btns
 	if btns.size() > 0:
 		_focused_index = clamp(_focused_index, 0, btns.size()-1)
 		(btns[_focused_index] as Button).grab_focus()
@@ -2251,8 +2311,9 @@ func _on_perk_selected(perk: Dictionary, vbox: VBoxContainer) -> void:
 
 	_show_status("⭐ Perk selected: %s" % perk["label"])
 
-	# Refresh perk buttons
-	for child in vbox.get_children():
+	# Refresh perk buttons — collect first, then free
+	var children : Array = vbox.get_children()
+	for child in children:
 		vbox.remove_child(child)
 		child.queue_free()
 	_populate_perks_tab()
