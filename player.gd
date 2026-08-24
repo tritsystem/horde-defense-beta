@@ -15,6 +15,22 @@ var device_id : int = -1
 # C:\Users\gbran\.claude\plans\reactive-sparking-finch.md Phase 1.
 var local_input_slot : int = 1
 
+# Player-replication fix, take 2: a first attempt drove this via the
+# MultiplayerSynchronizer's own property replication with a setter that
+# called set_multiplayer_authority() on every assignment -- confirmed
+# broken via a real 2-instance test (the receiving peer's own player
+# stayed stuck at the script default, never receiving the real value).
+# Root cause: the setter reassigns authority away from the server the
+# INSTANT the server sets this property (even before add_child()), which
+# can stop the server from ever being treated as allowed to broadcast
+# that very value to begin with -- a circular bootstrapping problem.
+# This var is now just plain replicated data (still spawn=true in
+# Player.tscn's SceneReplicationConfig, useful for identification/debug)
+# with no side effect. The actual authority assignment is a separate,
+# explicit RPC -- see NetPlayerSpawner.gd's rpc_assign_player_authority,
+# sent only AFTER add_child(), decoupled from property replication timing.
+var network_owner_peer_id : int = 1
+
 # ── Movement exports ─────────────────────────────────────────
 @export_group("Movement")
 @export var walk_speed    : float = 7.0
@@ -1504,7 +1520,24 @@ func on_weapon_equipped(w: Node) -> void:
 # ============================================================
 # DAMAGE / DEATH / RESPAWN
 # ============================================================
+# Player-HP-sync (its own pass, split out from Phase 4 when Corruption/
+# FogShrink both turned out to need it): Player is a peer-authoritative
+# node (each client owns its own), and nothing that calls take_damage()
+# today -- zombie melee, CorruptionManager's zone tick, FogShrinkManager's
+# ring tick -- is itself server-gated; every peer currently runs its own
+# independent, uncoordinated copy of all of that. Gating take_damage() to
+# only ever apply on the target's own owning peer turns that into a
+# feature rather than a bug: each peer's own local simulation already
+# decides when ITS OWN player gets hit (their own local zombie AI is also
+# independently chasing their own local player), so this is both the fix
+# for Corruption/FogShrink's would-be quadruple-damage (each peer's tick
+# loop calling take_damage on every player, own and remote) AND the
+# correct authority split for every other current and future caller,
+# without needing to audit or change any of them individually. Trust
+# level matches the rest of this multiplayer effort: PvE co-op, not
+# anti-cheat hardening -- see rpc_sync_health below for the mirror half.
 func take_damage(amount: float, instigator: Node = null) -> void:
+	if NetworkManager.is_networked and not is_multiplayer_authority(): return
 	var ss2 := get_tree().get_first_node_in_group("screen_shake")
 	if is_instance_valid(ss2) and ss2.has_method("hit"): ss2.hit()
 	var ie2 := get_tree().get_first_node_in_group("impact_effects")
@@ -1528,6 +1561,20 @@ func take_damage(amount: float, instigator: Node = null) -> void:
 	if is_instance_valid(_dn_node) and _dn_node.has_method("spawn_number"):
 		_dn_node.spawn_number(amount, global_position + Vector3(0, 2.2, 0), _dtype_p, false)
 	if health <= 0.0: _die()
+	if NetworkManager.is_networked: rpc_sync_health.rpc(health, is_dead)
+
+
+## Mirrors this player's health/is_dead to every peer's own local replicated
+## copy of this Player node (same NodePath, kept in sync by
+## NetPlayerSpawner's spawn). Cosmetic feedback (screen shake, blood,
+## damage numbers) deliberately isn't replicated -- known, bounded gap;
+## teammates see the HP bar and death state change, just not the hit VFX.
+@rpc("authority", "call_remote", "reliable")
+func rpc_sync_health(new_health: float, dead: bool) -> void:
+	health = new_health
+	is_dead = dead
+	health_changed.emit(health, max_health)
+
 
 func _die() -> void:
 	if is_dead: return
@@ -1562,6 +1609,7 @@ func _respawn() -> void:
 		if h.has_method("play_respawn_glow"): h.play_respawn_glow()
 	if not topdown_mode and device_id == -1:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+	if NetworkManager.is_networked: rpc_sync_health.rpc(health, is_dead)
 
 
 # ============================================================

@@ -1359,6 +1359,17 @@ _data = {
 &"Take 01": SubResource("Animation_bqhso")
 }
 
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_player1"]
+properties/0/path = NodePath(".:position")
+properties/0/spawn = true
+properties/0/replication_mode = 1
+properties/1/path = NodePath(".:rotation")
+properties/1/spawn = true
+properties/1/replication_mode = 1
+properties/2/path = NodePath(".:network_owner_peer_id")
+properties/2/spawn = true
+properties/2/replication_mode = 1
+
 [node name="Player" type="CharacterBody3D" unique_id=539593896 groups=["players"]]
 collision_layer = 3
 collision_mask = 3
@@ -1371,6 +1382,9 @@ hurt_sounds = Array[AudioStream]([ExtResource("4_axtmv")])
 respawn_sounds = Array[AudioStream]([ExtResource("5_6x32p")])
 shop_open_sound = ExtResource("6_pusvq")
 shop_close_sound = ExtResource("7_qduiv")
+
+[node name="MultiplayerSync" type="MultiplayerSynchronizer" parent="."]
+replication_config = SubResource("SceneReplicationConfig_player1")
 
 [node name="Skeleton3D" type="Skeleton3D" parent="." unique_id=1956269239]
 bones/0/name = "mixamorig_Hips"

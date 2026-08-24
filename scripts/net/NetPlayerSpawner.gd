@@ -40,6 +40,15 @@ func _ready() -> void:
 	if multiplayer.is_server():
 		# host plays too -- spawn its own player first
 		_spawn_for(multiplayer.get_unique_id())
+		# REAL BUG FIX: peer_connected only fires for a peer's OWN connection
+		# moment -- it does not fire retroactively. The real lobby flow has
+		# clients join and sit in the lobby BEFORE the host starts the match
+		# (which is what reloads into this scene), so by the time this node's
+		# _ready() runs, those peers are already connected and would
+		# otherwise never get a player spawned at all. Catch up on anyone
+		# already connected before wiring the signal for genuinely later joins.
+		for existing_peer_id in multiplayer.get_peers():
+			_spawn_for(existing_peer_id)
 		multiplayer.peer_connected.connect(_spawn_for)
 		multiplayer.peer_disconnected.connect(_despawn_for)
 
@@ -60,6 +69,7 @@ func _spawn_for(peer_id: int) -> void:
 	p.team_id = 1  # co-op: every human player defends the one shared team-1 base
 	p.local_input_slot = 1  # each client has exactly one local human at slot 1
 	p.device_id = -1
+	p.network_owner_peer_id = peer_id  # plain replicated data, see player.gd
 
 	_peer_to_player_id[peer_id] = _next_slot
 	_next_slot += 1
@@ -67,6 +77,28 @@ func _spawn_for(peer_id: int) -> void:
 	players_root.add_child(p, true)
 	p.set_multiplayer_authority(peer_id)
 	print("[NetPlayerSpawner] Spawned player_id=%d for peer %d" % [p.player_id, peer_id])
+	# Explicit, decoupled authority broadcast -- see player.gd's
+	# network_owner_peer_id comment for why relying on property
+	# replication alone doesn't work. Sent AFTER add_child() so the
+	# spawner's own replication of the node's existence is already
+	# underway; the receiver retries briefly in case its own copy of the
+	# node hasn't finished appearing yet when this arrives.
+	rpc_assign_player_authority.rpc(p.get_path(), peer_id)
+
+
+@rpc("authority", "call_local", "reliable")
+func rpc_assign_player_authority(player_path: NodePath, peer_id: int) -> void:
+	var attempts := 0
+	while attempts < 25:
+		var p := get_node_or_null(player_path)
+		if is_instance_valid(p):
+			p.set_multiplayer_authority(peer_id)
+			print("[NetPlayerSpawner] authority for %s -> peer %d (local peer=%d)" % [
+				player_path, peer_id, multiplayer.get_unique_id()])
+			return
+		attempts += 1
+		await get_tree().create_timer(0.2).timeout
+	push_warning("[NetPlayerSpawner] rpc_assign_player_authority: %s never appeared" % player_path)
 
 
 func _despawn_for(peer_id: int) -> void:
