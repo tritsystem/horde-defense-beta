@@ -35,6 +35,16 @@ signal cluster_cleared
 var health : float = 0.0
 
 var _cleared       : bool  = false
+# REAL BUG FIX: "can't kill hive, each hit after 0 health spawns more" --
+# take_damage()'s only re-entry guard was `if _cleared: return`, but
+# _cleared only becomes true once _check_cleared() ALSO sees the
+# cluster's eggs empty (see that function). A hive with health<=0 but a
+# still-alive/hatching egg would hit take_damage() again on every further
+# shot and re-run the FULL _on_hive_killed() retaliation burst every
+# single time -- an ever-growing flood of zombies instead of the nest
+# being dead. This flag gates the kill-transition itself, independent of
+# whether eggs happen to still be around.
+var _hive_killed   : bool  = false
 var _patrol_units  : Array = []
 var _eggs          : Array = []
 var _hive_mat      : StandardMaterial3D = null
@@ -454,7 +464,8 @@ func take_damage(amount: float, _source = null) -> void:
 	_apply_damage_visual()
 	if NetworkManager.is_networked:
 		rpc_sync_health.rpc(health)
-	if health <= 0.0:
+	if health <= 0.0 and not _hive_killed:
+		_hive_killed = true
 		_on_hive_killed()
 		if NetworkManager.is_networked:
 			rpc_hive_destroyed.rpc()
@@ -483,6 +494,8 @@ func rpc_sync_health(new_health: float) -> void:
 ## intent, though currently inert everywhere -- see _award_gold's note).
 @rpc("authority", "call_remote", "reliable")
 func rpc_hive_destroyed() -> void:
+	if _hive_killed: return   # defensive -- see take_damage()'s own guard
+	_hive_killed = true
 	if health > 0.0: health = 0.0
 	_apply_damage_visual()
 	for g in _patrol_units:
@@ -555,8 +568,33 @@ func _check_cleared() -> void:
 	_cleared = true
 	print("[Hive T%d] Cluster CLEARED — awarding gold" % tier)
 	_award_gold()
+	_spawn_trapped_ally()
 	cluster_cleared.emit()
 	get_tree().create_timer(3.0).timeout.connect(queue_free)
+
+
+## Every cleared hive reveals one trapped ally of a random class, at the
+## hive's own position, for the player to free by approaching (see
+## team_ally.gd's _tick_trapped). Runs on every peer's own local
+## _check_cleared() call (server via the normal flow, clients via
+## rpc_hive_destroyed's mirror) -- same documented not-yet-networked v1
+## scope cut as the starter Builder ally in game_phase_script.gd.
+func _spawn_trapped_ally() -> void:
+	var econ := get_tree().get_first_node_in_group("economy_controller")
+	if not is_instance_valid(econ) or not econ.has_method("_spawn_team_ally"):
+		print("[HiveCluster] _spawn_trapped_ally FAIL: econ valid=%s has_method=%s" % [
+			str(is_instance_valid(econ)), str(is_instance_valid(econ) and econ.has_method("_spawn_team_ally"))])
+		return
+	var random_class : int = randi() % 3   # AllyClass.BUILDER/GUARD/SCOUT
+	# `=` not `:=` -- econ is statically typed as Node, so calling a method
+	# defined only on game_phase_script.gd's class through it is a dynamic/
+	# duck-typed call with no statically-inferable return type; `:=` here
+	# fails to compile the whole script (confirmed: broke hive placement
+	# entirely, cascading into "Nonexistent function 'new' in base
+	# 'GDScript'" everywhere HiveCluster.new() is called elsewhere).
+	var ally = econ._spawn_team_ally(1, random_class, global_position, true, true)
+	print("[HiveCluster] _spawn_trapped_ally: class=%d ally_valid=%s trapped=%s" % [
+		random_class, str(is_instance_valid(ally)), str(ally.trapped if is_instance_valid(ally) else "n/a")])
 
 
 func _award_gold() -> void:

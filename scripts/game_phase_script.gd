@@ -269,6 +269,11 @@ class StateCombat extends State:
 			var rm := _ctrl.get_tree().get_first_node_in_group("revive_manager")
 			if is_instance_valid(rm) and rm.has_method("reset"): rm.reset()
 			_ctrl._spawn_starting_turrets()
+		# Checked every round, not just round 1: guarantees a starter Builder
+		# ally exists no matter what happens to the previous one (it's
+		# undamageable so normally can't be lost, but this is the robust
+		# guarantee regardless of how it might disappear).
+		_ctrl._ensure_team_ally_presence()
 
 	func tick(delta: float) -> void:
 		_combat_timer += delta
@@ -707,14 +712,21 @@ func rpc_apply_base_upgrade(team: int, amount: int) -> void:
 
 
 ## Mirrors shopui.gd's _on_base_upgrade_selected effect exactly.
+## REAL BUG FIX: the base-node fallback used to check for "max_health"/
+## "current_health" -- basenode.gd has neither; its real fields are
+## "health" (current, doubles as the de-facto ceiling -- no separate max)
+## and "health_value" (a mirror of health, used for HUD binding). Neither
+## fallback condition was ever true, so every base upgrade purchase --
+## player-bought or AI-bought -- silently did nothing at all.
 func _apply_base_upgrade(team: int, amount: int) -> void:
 	for b in get_tree().get_nodes_in_group("bases"):
 		if "team_id" in b and int(b.get("team_id")) == team:
 			if b.has_method("add_health"):
 				b.add_health(amount)
 			else:
-				if "max_health"     in b: b.max_health     += amount
-				if "current_health" in b: b.current_health += amount
+				if "health" in b:
+					b.health += amount
+					if "health_value" in b: b.health_value = b.health
 			return
 
 
@@ -1375,6 +1387,65 @@ func _spawn_starting_turrets() -> void:
 		if "team_id" in t: t.set("team_id", 1)
 		t.add_to_group("starting_turret")
 	print("[GamePhase] Spawned 4 starting turrets near base")
+
+
+# AI-teammate feature: guarantees a starter Builder-class TeamAlly exists
+# for team 1, checked every round (not just round 1) so a lost one gets
+# replaced. Not yet gated to server-only or network-replicated in any way
+# -- known, documented v1 scope cut (matching how MutationManager/
+# CorruptionManager, called from this same combat-state-enter() block,
+# already carry the same caveat): each peer in a networked game spawns
+# and sees its own local, unsynced ally, but every ally's actual gold-
+# spending goes through game_phase_script.gd's already-networked RPC pair
+# regardless of which peer's local instance triggers it, so the economic
+# effect stays correct even though the allies' own visibility isn't
+# synced yet.
+const TEAM_ALLY_SCRIPT : String = "res://team_ally.gd"
+
+func _ensure_team_ally_presence() -> void:
+	if not ResourceLoader.exists(TEAM_ALLY_SCRIPT): return
+	for a in get_tree().get_nodes_in_group("team_allies"):
+		if is_instance_valid(a) and "team_id" in a and int(a.get("team_id")) == 1 \
+				and "ally_class" in a and int(a.get("ally_class")) == 0:  # AllyClass.BUILDER
+			return   # a starter Builder already exists
+	_spawn_team_ally(1, 0, Vector3.ZERO, false, false)   # team 1, BUILDER, near base, not trapped
+	print("[GamePhase] Spawned starter Builder ally")
+
+
+## Shared spawn helper -- also used by HiveCluster.gd for the
+## trapped-ally-in-hive mechanic (use_override_pos=true + spawn_pos_override
+## lets that caller place it at the hive's position instead of near the
+## base; a bool flag rather than a Vector3.ZERO sentinel since a hive could
+## legitimately end up placed near world origin).
+func _spawn_team_ally(team: int, ally_class_int: int, spawn_pos_override: Vector3, use_override_pos: bool, trapped: bool) -> Node:
+	var script : Script = load(TEAM_ALLY_SCRIPT)
+	if not is_instance_valid(script): return null
+
+	var spawn : Vector3
+	if use_override_pos:
+		spawn = spawn_pos_override
+	else:
+		var base : Node3D = null
+		for b in get_tree().get_nodes_in_group("bases"):
+			if "team_id" in b and int(b.get("team_id")) == team and b is Node3D:
+				base = b as Node3D; break
+		if not is_instance_valid(base): return null
+		spawn = base.global_position + Vector3(6.0, 0.0, -6.0)
+		var space := get_tree().root.get_world_3d().direct_space_state
+		if is_instance_valid(space):
+			var ray := PhysicsRayQueryParameters3D.create(Vector3(spawn.x, 200.0, spawn.z), Vector3(spawn.x, -50.0, spawn.z))
+			ray.collision_mask = 1
+			var hit := space.intersect_ray(ray)
+			if not hit.is_empty(): spawn.y = hit.position.y
+
+	var ally := CharacterBody3D.new()
+	ally.set_script(script)
+	ally.team_id = team
+	ally.ally_class = ally_class_int
+	ally.trapped = trapped
+	get_tree().current_scene.add_child(ally)
+	ally.global_position = spawn
+	return ally
 
 
 func _disable_legacy_spawners() -> void:
