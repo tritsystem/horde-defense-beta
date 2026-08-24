@@ -1893,10 +1893,14 @@ func _on_base_upgrade_selected(index: int) -> void:
 	if not _check_funds(cost): return
 	for b in get_tree().get_nodes_in_group("bases"):
 		if "team_id" in b and b.team_id == _player_team_id:
+			# REAL BUG FIX: see game_phase_script.gd's _apply_base_upgrade for
+			# the full explanation -- basenode.gd has no max_health/
+			# current_health fields, only health/health_value, so this
+			# fallback was always a silent no-op.
 			if b.has_method("add_health"): b.add_health(upg["amount"])
-			else:
-				if "max_health"     in b: b.max_health     += upg["amount"]
-				if "current_health" in b: b.current_health += upg["amount"]
+			elif "health" in b:
+				b.health += upg["amount"]
+				if "health_value" in b: b.health_value = b.health
 			_show_status("🏯 %s!" % upg["label"]); return
 	_show_status("⚠ Base not found!")
 

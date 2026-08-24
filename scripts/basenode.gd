@@ -759,7 +759,17 @@ func _on_enemy_entered_zone(body: Node) -> void:
 func take_damage(amount: float, instigator = null) -> void:
 	if health <= 0.0: return
 
-	# Turrets shield the base — if any friendly turret is alive, block damage.
+	# REAL BUG FIX: "zombies don't hurt base" -- this used to block 100% of
+	# incoming damage as long as even ONE friendly turret was alive
+	# anywhere, with no cap and no falloff. game_phase_script.gd always
+	# spawns 4 starting turrets at Round 1 (_spawn_starting_turrets), so
+	# the base was effectively invulnerable for most of every match by
+	# default, not just when meaningfully well-defended -- confirmed as a
+	# real, reported symptom, not a design choice ("the base takes no
+	# damage at all" rather than "turrets make the base tanky"). Turrets
+	# now reduce incoming damage instead of fully blocking it, scaling
+	# with how many are alive, capped well short of 100% so the base is
+	# never literally unkillable regardless of turret count.
 	var alive : int = 0
 	var total : int = 0
 	for t in get_tree().get_nodes_in_group("turrets"):
@@ -770,9 +780,10 @@ func take_damage(amount: float, instigator = null) -> void:
 		if t.has_method("is_dead"):  t_alive = not t.is_dead()
 		elif "health" in t:          t_alive = float(t.get("health")) > 0.0
 		if t_alive: alive += 1
-	if total > 0 and alive > 0:
+	if alive > 0:
+		var shield_pct : float = minf(0.20 * alive, 0.75)   # 20%/turret, capped at 75%
+		amount *= (1.0 - shield_pct)
 		_flash_protected()
-		return
 
 	health       = maxf(health - amount, 0.0)
 	health_value = health
