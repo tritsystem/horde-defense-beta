@@ -259,13 +259,20 @@ func _update_hp_bar() -> void:
 
 
 # ── Damage ────────────────────────────────────────────────────
+# Phase 4 of the multiplayer plan: same reasoning as HiveCluster's
+# take_damage() -- CombatRelay only ever calls this on the server's own
+# copy, this guard is defensive insurance. rpc_sync_health mirrors
+# ongoing damage; rpc_egg_destroyed mirrors an early (damage) death to
+# every peer's own replicated Egg (same NodePath, matched by the
+# spawn_function spawner), so clients actually see it react and
+# disappear instead of sitting at full HP until their own local hatch
+# timer eventually fires.
 func take_damage(amount: float, _source = null) -> void:
+	if NetworkManager.is_networked and not multiplayer.is_server(): return
 	if _done: return
 	if egg_type == EggType.MIMIC: _reveal_mimic()
 	health -= amount
-	if is_instance_valid(_hp_label):
-		_hp_label.text = "%d" % maxi(0, int(health))
-	_update_hp_bar()
+	_apply_damage_visual()
 	if health <= 0.0:
 		_done = true
 		_reveal_on_map(35.0)
@@ -279,9 +286,36 @@ func take_damage(amount: float, _source = null) -> void:
 		# scaled further by tier) so destroying an egg is a real tradeoff,
 		# not a free kill.
 		var retaliation_count : int = wave_size * 3 + (tier - 1) * 2
-		_spawn_wave(retaliation_count)
+		_spawn_wave(retaliation_count)   # no-ops on a client via its own gate
 		egg_destroyed.emit(self)
+		if NetworkManager.is_networked: rpc_egg_destroyed.rpc()
 		queue_free()
+	elif NetworkManager.is_networked:
+		rpc_sync_health.rpc(health)
+
+
+func _apply_damage_visual() -> void:
+	if is_instance_valid(_hp_label):
+		_hp_label.text = "%d" % maxi(0, int(health))
+	_update_hp_bar()
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_sync_health(new_health: float) -> void:
+	health = new_health
+	if egg_type == EggType.MIMIC: _reveal_mimic()
+	_apply_damage_visual()
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_egg_destroyed() -> void:
+	if _done: return
+	_done = true
+	health = 0.0
+	_apply_damage_visual()
+	_reveal_on_map(35.0)
+	egg_destroyed.emit(self)
+	queue_free()
 
 
 func _reveal_on_map(radius: float) -> void:
@@ -360,6 +394,14 @@ func _safe_spawn_position(pos: Vector3) -> Vector3:
 	return Vector3(pos.x, pos.y + 0.5, pos.z)   # last-resort flat fallback
 
 func _spawn_wave(count_override: int = -1) -> void:
+	# Networked: server-only. Called from both take_damage()'s death
+	# retaliation (guarded above already, kept here too as the single
+	# authoritative gate) and _do_hatch()'s natural hatch, which -- unlike
+	# damage -- runs identically-timed on every peer already (same
+	# hatch_time from the same replicated spawn), so it needs no RPC of
+	# its own; this gate alone stops a client's local mirror from
+	# independently spawning its own duplicate wave.
+	if NetworkManager.is_networked and not multiplayer.is_server(): return
 	if not ResourceLoader.exists(HATCH_SCENE): return
 	var packed : PackedScene = load(HATCH_SCENE) as PackedScene
 	if not is_instance_valid(packed): return
@@ -413,7 +455,14 @@ func _spawn_wave(count_override: int = -1) -> void:
 		# ATTACK mode: hive units hunt nearest player then enemy base
 		if "ai_mode" in creep: creep.set("ai_mode", 1)   # AIMode.ATTACK = 1
 
-		get_tree().current_scene.add_child(creep)
+		# Networked: reuses PurchaseRelay's replicated spawn root, same as
+		# HiveCluster's guards/turrets -- see HiveCluster.gd's
+		# _spawn_patrol_guards for the full rationale.
+		if NetworkManager.is_networked:
+			PurchaseRelay.register_scene(packed)
+			PurchaseRelay.spawn_root().add_child(creep, true)
+		else:
+			get_tree().current_scene.add_child(creep)
 
 		if creep is Node3D:
 			var spread : Vector3 = Vector3(randf_range(-2.5, 2.5), 0.0, randf_range(-2.5, 2.5))

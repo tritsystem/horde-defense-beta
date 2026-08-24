@@ -61,14 +61,111 @@ var _player_base : Node3D = null
 var _clusters    : Array  = []
 var _alive_count : int    = 0
 
+# ============================================================
+# NETWORKED REPLICATION — Phase 4 of the multiplayer plan.
+# HiveCluster and Egg are both code-constructed (.new(), not a
+# PackedScene), so MultiplayerSpawner.add_spawnable_scene() can't
+# register them -- they need spawn_function instead. This node is a
+# single, well-known scene child (unlike HiveCluster/Egg instances
+# themselves, which are dynamically created and can't host their own
+# spawner registration identically on every peer), so it's the right
+# place for both spawners. Set up unconditionally in _ready() (not
+# gated to server) so a client has the spawner ready to receive
+# replicated spawns even though it never runs _boot()'s placement.
+# ============================================================
+var _cluster_spawn_root : Node3D
+var _cluster_spawner     : MultiplayerSpawner
+var _egg_spawn_root      : Node3D
+var _egg_spawner         : MultiplayerSpawner
+
 
 func _ready() -> void:
+	add_to_group("hive_nest_manager")
+	_setup_networked_spawners()
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_boot()
 
 
+func _setup_networked_spawners() -> void:
+	_cluster_spawn_root = Node3D.new()
+	_cluster_spawn_root.name = "HiveClusterRoot"
+	add_child(_cluster_spawn_root)
+	_cluster_spawner = MultiplayerSpawner.new()
+	_cluster_spawner.name = "HiveClusterSpawner"
+	_cluster_spawner.spawn_path = _cluster_spawn_root.get_path()
+	_cluster_spawner.spawn_function = _spawn_cluster_from_data
+	add_child(_cluster_spawner)
+
+	_egg_spawn_root = Node3D.new()
+	_egg_spawn_root.name = "HiveEggRoot"
+	add_child(_egg_spawn_root)
+	_egg_spawner = MultiplayerSpawner.new()
+	_egg_spawner.name = "HiveEggSpawner"
+	_egg_spawner.spawn_path = _egg_spawn_root.get_path()
+	_egg_spawner.spawn_function = _spawn_egg_from_data
+	add_child(_egg_spawner)
+
+
+## Called by _spawn_cluster() below (server-only). data carries everything
+## needed to reconstruct an identical HiveCluster on every peer -- position
+## isn't part of the export vars HiveCluster reads from itself, so it's
+## applied here before the spawner parents the returned node.
+func _spawn_cluster_from_data(data: Dictionary) -> HiveCluster:
+	var cluster := HiveCluster.new()
+	cluster.tier               = data.get("tier", 1)
+	cluster.hive_hp            = TIER_HIVE_HP[cluster.tier]
+	cluster.patrol_count       = TIER_GUARD_COUNTS[cluster.tier]
+	cluster.max_eggs           = TIER_MAX_EGGS[cluster.tier]
+	cluster.egg_spawn_interval = TIER_EGG_SPAWN_INT[cluster.tier]
+	cluster.egg_hatch_time     = TIER_EGG_HATCH_TIME[cluster.tier]
+	cluster.egg_wave_size      = TIER_EGG_WAVE_SIZE[cluster.tier]
+	cluster.patrol_radius      = TIER_PATROL_RADII[cluster.tier]
+	cluster.turret_count       = TIER_TURRET_COUNTS[cluster.tier]
+	cluster.turret_level       = TIER_TURRET_LEVEL[cluster.tier]
+	cluster.attack_target      = _player_base
+	cluster.creep_pool         = TIER_CREEP_POOLS[cluster.tier].duplicate()
+	cluster.position           = data.get("position", Vector3.ZERO)
+	if multiplayer.is_server():
+		cluster.cluster_cleared.connect(_on_cluster_cleared)
+	return cluster
+
+
+## Called by HiveCluster (server-only) when it wants to spawn a real,
+## networked egg instead of constructing one locally -- see Egg.gd's
+## _spawn_single_egg() for the networked branch that calls this.
+func spawn_networked_egg(egg_data: Dictionary) -> void:
+	if not multiplayer.is_server(): return
+	_egg_spawner.spawn(egg_data)
+
+
+func _spawn_egg_from_data(data: Dictionary) -> Egg:
+	var egg := Egg.new()
+	egg.tier          = data.get("tier", 1)
+	egg.max_hp        = data.get("max_hp", 80.0)
+	egg.hatch_time    = data.get("hatch_time", 60.0)
+	egg.wave_size     = data.get("wave_size", 4)
+	egg.creep_ids     = data.get("creep_ids", ["zombie"])
+	egg.attack_target = _player_base
+	egg.position       = data.get("position", Vector3.ZERO)
+	var owner_path : NodePath = data.get("owner_cluster_path", NodePath())
+	if not owner_path.is_empty():
+		var owner_cluster := get_node_or_null(owner_path)
+		if is_instance_valid(owner_cluster) and owner_cluster.has_method("_on_networked_egg_spawned"):
+			owner_cluster._on_networked_egg_spawned(egg)
+	return egg
+
+
 func _boot() -> void:
+	# Phase 4 of the multiplayer plan: hive/egg/wave simulation is
+	# server-only. A non-host client must not run its own independent
+	# placement pass -- it would diverge from the server's nests (and,
+	# once HiveCluster/Egg gain MultiplayerSpawner.spawn_function
+	# registration, would also conflict with the server's replicated
+	# spawns). Local/offline play (NetworkManager.is_networked == false)
+	# is completely untouched.
+	if NetworkManager.is_networked and not multiplayer.is_server():
+		return
 	_find_player_base()
 	if not is_instance_valid(_player_base):
 		await get_tree().create_timer(0.5).timeout
@@ -142,6 +239,16 @@ func _depth_to_tier(t: float) -> int:
 
 
 func _spawn_cluster(world_pos: Vector3, tier: int) -> void:
+	# Networked: only ever reached on the server (see _boot()'s gate), so
+	# routing through the spawn_function-registered spawner replicates an
+	# identical HiveCluster to every peer instead of only existing locally.
+	if NetworkManager.is_networked:
+		var cluster_net : HiveCluster = _cluster_spawner.spawn({"tier": tier, "position": world_pos})
+		if is_instance_valid(cluster_net):
+			_clusters.append(cluster_net)
+			print("[HiveNestManager] Tier %d cluster at %s (networked)" % [tier, str(world_pos.snapped(Vector3.ONE))])
+		return
+
 	var cluster := HiveCluster.new()
 	cluster.tier               = tier
 	cluster.hive_hp            = TIER_HIVE_HP[tier]

@@ -78,9 +78,19 @@ func _ready() -> void:
 func _deferred_init() -> void:
 	_build_structure_exclude()
 	_snap_to_ground()
-	_spawn_initial_eggs()
-	_spawn_patrol_guards()
-	_spawn_defense_turrets()
+	# Phase 4 of the multiplayer plan: on a non-host client this HiveCluster
+	# is itself a replicated mirror (spawned via HiveNestManager's
+	# spawn_function -- see HiveNestManager.gd's _spawn_cluster_from_data).
+	# Guards/turrets/eggs must only ever be created once, by the server, and
+	# reach clients via their own replication -- a client independently
+	# running this same spawning logic on its local mirror would create a
+	# second, divergent set nobody else sees. Structure/heart stay
+	# unconditional: both are pure local visuals, deterministic from `tier`
+	# alone, safe (and necessary) to build identically on every peer.
+	if not (NetworkManager.is_networked and not multiplayer.is_server()):
+		_spawn_initial_eggs()
+		_spawn_patrol_guards()
+		_spawn_defense_turrets()
 	_spawn_hive_heart()
 
 
@@ -258,6 +268,23 @@ func _spawn_single_egg() -> void:
 	var hit := space.intersect_ray(ray)
 	if not hit.is_empty(): wpos.y = hit.position.y
 
+	# Networked: only ever reached on the server (see _deferred_init's gate),
+	# since a client's own local HiveCluster mirror never calls this. Route
+	# through HiveNestManager's replicated egg spawner instead of
+	# constructing locally, so every peer gets the same Egg at the same
+	# position -- see HiveNestManager.gd's spawn_networked_egg/
+	# _spawn_egg_from_data, which calls back into _on_networked_egg_spawned
+	# below (on every peer) to finish wiring this cluster's own bookkeeping.
+	if NetworkManager.is_networked:
+		var hnm := get_tree().get_first_node_in_group("hive_nest_manager")
+		if is_instance_valid(hnm):
+			hnm.spawn_networked_egg({
+				"tier": tier, "max_hp": 55.0 + tier * 22.0, "hatch_time": egg_hatch_time,
+				"wave_size": egg_wave_size, "creep_ids": creep_pool.duplicate(),
+				"position": wpos, "owner_cluster_path": get_path(),
+			})
+		return
+
 	var egg := Egg.new()
 	egg.tier          = tier
 	egg.max_hp        = 55.0 + tier * 22.0
@@ -267,6 +294,17 @@ func _spawn_single_egg() -> void:
 	egg.creep_ids     = creep_pool.duplicate()
 	get_tree().current_scene.add_child(egg)
 	egg.global_position = wpos
+	egg.hatched.connect(_on_egg_gone)
+	egg.egg_destroyed.connect(_on_egg_gone)
+	_eggs.append(egg)
+
+
+## Called by HiveNestManager._spawn_egg_from_data on every peer once a
+## networked egg (requested via _spawn_single_egg's networked branch above)
+## has been constructed -- finishes the same bookkeeping the local path
+## does inline (_eggs tracking, hatched/egg_destroyed signal wiring).
+func _on_networked_egg_spawned(egg: Egg) -> void:
+	if not is_instance_valid(egg): return
 	egg.hatched.connect(_on_egg_gone)
 	egg.egg_destroyed.connect(_on_egg_gone)
 	_eggs.append(egg)
@@ -316,7 +354,17 @@ func _spawn_patrol_guards() -> void:
 			if "enemy_base"   in guard: guard.set("enemy_base",   attack_target)
 			if "friendly_base" in guard: guard.set("friendly_base", self)
 
-		get_tree().current_scene.add_child(guard)
+		# Networked: only ever reached on the server (see _deferred_init's
+		# gate). Route through PurchaseRelay's own replicated spawn root
+		# instead of current_scene -- it's the same generic "server spawns a
+		# real PackedScene, MultiplayerSpawner replicates it" mechanism
+		# purchased creeps/turrets already use, reused here rather than
+		# standing up a parallel spawner just for hive guards.
+		if NetworkManager.is_networked:
+			PurchaseRelay.register_scene(packed)
+			PurchaseRelay.spawn_root().add_child(guard, true)
+		else:
+			get_tree().current_scene.add_child(guard)
 		guard.global_position = spawn_pos
 
 		# REAL BUG FIX (2026-07-25): setting ai_mode directly has no effect --
@@ -365,7 +413,12 @@ func _spawn_defense_turrets() -> void:
 		if "team_id" in turret: turret.set("team_id", 2)
 		if "hostile_to_players" in turret: turret.set("hostile_to_players", true)
 
-		get_tree().current_scene.add_child(turret)
+		# Networked: same PurchaseRelay-spawn-root reuse as guards above.
+		if NetworkManager.is_networked:
+			PurchaseRelay.register_scene(packed)
+			PurchaseRelay.spawn_root().add_child(turret, true)
+		else:
+			get_tree().current_scene.add_child(turret)
 		if turret is Node3D: (turret as Node3D).global_position = spawn_pos
 
 		# Scale it to turret_level via the turret's own real upgrade() path
@@ -384,15 +437,59 @@ func _patrol_circle(center: Vector3, radius: float, points: int) -> Array[Vector
 
 
 # ── Damage ────────────────────────────────────────────────────
+# Phase 4 of the multiplayer plan: CombatRelay only ever calls
+# take_damage() on the server's own copy of a target (see basegun.gd's
+# authority-gated resolve-locally-or-relay branch) -- this guard is
+# defensive insurance matching Phase 3's convention, not a path any
+# existing caller currently reaches. Health changes are mirrored to
+# every peer's own replicated HiveCluster (same NodePath, kept in sync
+# by the spawn_function spawner) via rpc_sync_health, and an early
+# death (before _cleared naturally follows on every peer already) via
+# rpc_hive_destroyed -- without these, a non-host client's own local
+# mirror would never visually react to damage the server resolved.
 func take_damage(amount: float, _source = null) -> void:
+	if NetworkManager.is_networked and not multiplayer.is_server(): return
 	if _cleared: return
 	health -= amount
+	_apply_damage_visual()
+	if NetworkManager.is_networked:
+		rpc_sync_health.rpc(health)
+	if health <= 0.0:
+		_on_hive_killed()
+		if NetworkManager.is_networked:
+			rpc_hive_destroyed.rpc()
+
+
+func _apply_damage_visual() -> void:
 	if is_instance_valid(_hive_mat):
 		var ratio : float = clampf(health / hive_hp, 0.0, 1.0)
 		_hive_mat.albedo_color = _hive_mat.albedo_color.lerp(Color(0.9, 0.08, 0.04), (1.0 - ratio) * 0.55)
 	_update_hp_display()
-	if health <= 0.0:
-		_on_hive_killed()
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_sync_health(new_health: float) -> void:
+	health = new_health
+	_apply_damage_visual()
+
+
+## Client-side mirror of an early (damage) death -- the natural
+## cluster_cleared path (health hits 0 with no eggs left) doesn't need
+## this since egg state syncs independently, but a hive killed by direct
+## damage while eggs are still alive needs an explicit signal so guards
+## switch to ATTACK and the retaliation burst plays on every peer, not
+## just the server. Skips _spawn_extra_zombies (already server-gated,
+## see that function) and re-running gold award (also server-only in
+## intent, though currently inert everywhere -- see _award_gold's note).
+@rpc("authority", "call_remote", "reliable")
+func rpc_hive_destroyed() -> void:
+	if health > 0.0: health = 0.0
+	_apply_damage_visual()
+	for g in _patrol_units:
+		if is_instance_valid(g) and "ai_mode" in g:
+			g.set("ai_mode", 1)
+	_reveal_on_map(60.0)
+	_check_cleared()
 
 
 func _on_hive_killed() -> void:
@@ -550,6 +647,15 @@ func _activate_heart_buff(player: Node) -> void:
 
 
 func _spawn_extra_zombies(count: int) -> void:
+	# Networked: server-only, same reasoning as _deferred_init's gate --
+	# called from both take_damage()'s death-retaliation (already
+	# server-only, see take_damage() below) and try_channel_heart()'s
+	# periodic spawns (triggered by whichever peer's local player is
+	# channeling -- not itself server-validated; the Hive Heart mechanic's
+	# own authority is a known, documented gap this pass doesn't solve).
+	# This gate at least prevents a channeling client from independently
+	# creating real, unreplicated zombies nobody else sees.
+	if NetworkManager.is_networked and not multiplayer.is_server(): return
 	if not ResourceLoader.exists(GUARD_SCENE): return
 	var packed : PackedScene = load(GUARD_SCENE)
 	var space  := get_tree().root.get_world_3d().direct_space_state
@@ -575,7 +681,11 @@ func _spawn_extra_zombies(count: int) -> void:
 			ray.exclude = _structure_exclude
 			var hit := space.intersect_ray(ray)
 			if not hit.is_empty(): spawn.y = hit.position.y + 0.5
-		get_tree().current_scene.add_child(g)
+		if NetworkManager.is_networked:
+			PurchaseRelay.register_scene(packed)
+			PurchaseRelay.spawn_root().add_child(g, true)
+		else:
+			get_tree().current_scene.add_child(g)
 		if g is Node3D: (g as Node3D).global_position = spawn
 		if is_instance_valid(zhm) and g is CharacterBody3D:
 			zhm.register_z1(g as CharacterBody3D)
