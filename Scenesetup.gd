@@ -42,6 +42,9 @@ func _try_setup() -> void:
 	if "main_menu" in path_lower or "mainmenu" in path_lower:
 		print("[SceneSetup] Skipping main menu scene: %s" % path)
 		return
+	if "lobby" in path_lower:
+		print("[SceneSetup] Skipping multiplayer lobby scene: %s" % path)
+		return
 
 	var gs       := _get_autoload("GameSettings", false)
 	var gs_ready : bool = is_instance_valid(gs) and int(gs.get("player_count") if "player_count" in gs else 0) > 0
@@ -68,6 +71,17 @@ func _try_setup() -> void:
 
 
 func _run_ssm_setup() -> void:
+	# ── Networked path (Phase 1 of the multiplayer plan) ──────
+	# NetworkManager.is_networked is only ever true after Host/Join
+	# in scenes/lobby.tscn -- local single-player/split-screen play
+	# never sets it, so this branch is fully inert by default.
+	var nm := _get_autoload("NetworkManager", false)
+	if is_instance_valid(nm) and bool(nm.get("is_networked")):
+		await _run_networked_setup()
+		_spawn_base_turrets()
+		print("[SceneSetup] Done (networked).")
+		return
+
 	# ── Find or create SSM ────────────────────────────────────
 	var ssm_list := get_tree().get_nodes_in_group("splitscreen_manager")
 	print("[SceneSetup] SSM nodes found: %d" % ssm_list.size())
@@ -98,6 +112,24 @@ func _run_ssm_setup() -> void:
 
 	_spawn_base_turrets()
 	print("[SceneSetup] Done.")
+
+
+func _run_networked_setup() -> void:
+	print("[SceneSetup] Networked setup -- creating NetPlayerSpawner")
+	var existing := get_tree().get_nodes_in_group("net_player_spawner")
+	if not existing.is_empty():
+		print("[SceneSetup] NetPlayerSpawner already present, skipping create")
+		return
+	var scr := load("res://scripts/net/NetPlayerSpawner.gd")
+	if not is_instance_valid(scr):
+		push_error("[SceneSetup] scripts/net/NetPlayerSpawner.gd not found")
+		return
+	var nps := Node.new()
+	nps.name = "NetPlayerSpawner"
+	nps.set_script(scr)
+	nps.add_to_group("net_player_spawner")
+	get_tree().current_scene.add_child(nps)
+	await get_tree().process_frame
 
 
 func _create_ssm() -> Node:

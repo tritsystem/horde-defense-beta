@@ -335,6 +335,11 @@ func _spawn_player(idx: int, vp: SubViewport) -> void:
 	if "player_id" in player: player.set("player_id", pid)
 	if "device_id" in player: player.set("device_id", device)
 	if "team_id"   in player: player.set("team_id",   tid)
+	# Local split-screen: one process owns every player, so the local-input
+	# slot IS the player_id (unlike the networked path, where every client
+	# always reads slot 1 regardless of its assigned player_id -- see
+	# player.gd's local_input_slot and the multiplayer plan, Phase 1).
+	if "local_input_slot" in player: player.set("local_input_slot", pid)
 	# ── Mouse isolation: gamepad players' SubViewportContainers must not receive
 	# mouse events. This stops the KBM player from accidentally clicking across
 	# screen boundaries into another player's UI.  KBM player (device == -1) keeps

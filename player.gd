@@ -7,6 +7,13 @@ extends CharacterBody3D
 var player_id : int = 1
 var team_id   : int = 1
 var device_id : int = -1
+# local_input_slot: which LOCAL device-input actions (p{n}_*) this instance reads.
+# In local split-screen, one process owns every player, so this always equals
+# player_id -- unchanged there. Over the network, each client process has
+# exactly ONE local human and always reads slot 1, regardless of the
+# network-facing player_id the server assigned (1-4). See _a() below and
+# C:\Users\gbran\.claude\plans\reactive-sparking-finch.md Phase 1.
+var local_input_slot : int = 1
 
 # ── Movement exports ─────────────────────────────────────────
 @export_group("Movement")
@@ -275,7 +282,13 @@ func _ready() -> void:
 	if not is_instance_valid(td_camera):
 		push_error("[Player] td_camera is NULL — check $CameraRoot/TopDownPivot/TopDownCamera exists"); return
 
-	fps_camera.current   = true
+	# Networked: only the locally-controlled player's camera should ever
+	# activate, or every client would see through whichever player's camera
+	# happened to init last. Local split-screen is unaffected -- SSM parents
+	# each player under its own SubViewport, where "current" is scoped
+	# per-viewport rather than a scene-tree-wide top-level camera.
+	var _cameras_active : bool = not _is_remote_puppet()
+	fps_camera.current   = _cameras_active
 	fps_camera.position  = Vector3.ZERO
 	fps_camera.rotation  = Vector3.ZERO
 	fps_camera.near      = 0.03
@@ -666,7 +679,13 @@ func _set_body_visible(visible_flag: bool) -> void:
 # ============================================================
 # INPUT HELPERS
 # ============================================================
-func _a(n: String) -> String: return "p%d_%s" % [player_id, n]
+# True only when networked AND this instance belongs to a different peer --
+# i.e. this is a remote player we're just rendering, not controlling. Always
+# false in local split-screen (has_multiplayer_peer() is false there).
+func _is_remote_puppet() -> bool:
+	return multiplayer.has_multiplayer_peer() and not is_multiplayer_authority()
+
+func _a(n: String) -> String: return "p%d_%s" % [local_input_slot, n]
 func _act(n: String) -> bool:
 	if device_id == -99: return false   # no device assigned — block all input
 	if not InputMap.has_action(_a(n)): return false
@@ -699,6 +718,7 @@ func _axis(axis: int) -> float:
 # INPUT
 # ============================================================
 func _unhandled_input(event: InputEvent) -> void:
+	if _is_remote_puppet(): return   # remote player -- don't read local input for it
 	if device_id == -99: return   # no device assigned
 	if is_dead: return
 	if _class_selecting or _deck_open: return
@@ -708,6 +728,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 func _input(event: InputEvent) -> void:
+	if _is_remote_puppet(): return   # remote player -- don't read local input for it
 	if device_id == -1 and event is InputEventKey and event.pressed and not event.echo:
 
 		if event.keycode == KEY_K:
@@ -902,6 +923,11 @@ func _process(delta: float) -> void:
 # PHYSICS
 # ============================================================
 func _physics_process(delta: float) -> void:
+	# Remote players: position/velocity are driven by the replicated
+	# MultiplayerSynchronizer state, not local physics -- running
+	# move_and_slide() here would fight that. Their AnimationTree still
+	# updates from synced velocity in _process() above, so they keep animating.
+	if _is_remote_puppet(): return
 	if is_dead: return
 	if _class_selecting:
 		# Keep gravity/floor contact but block all player input

@@ -48,6 +48,7 @@ AllyChoiceUI="*res://ally_choice_ui.gd"
 DebugTuningPanel="*res://DebugTuningPanel.gd"
 AudioManager="*uid://cah0em8ab833v"
 RunSaveManager="*res://RunSaveManager.gd"
+NetworkManager="*res://NetworkManager.gd"
 
 [global_group]
 
