@@ -71,23 +71,45 @@ func _spawn_zone(pos: Vector3) -> void:
 	zone.set_meta("radius", ZONE_RADIUS)
 	zone.set_meta("purified", false)
 
-	# Visual — large dark cylinder on ground
+	# Visual — a real puddle-of-corruption ground decal, not a raised
+	# cylinder: near-flat, shaded (not unshaded, since a wet/liquid look
+	# needs real lighting response to show any sheen at all) glossy
+	# surface, with a procedural ripple normal map (FastNoiseLite via
+	# NoiseTexture2D -- no art sourced, generated in code, same
+	# placeholder-but-real precedent as every other procedural mesh in
+	# this codebase) so it reads as liquid rather than a flat color disc.
 	var mi   := MeshInstance3D.new()
 	var mesh := CylinderMesh.new()
 	mesh.top_radius    = ZONE_RADIUS
 	mesh.bottom_radius = ZONE_RADIUS
-	mesh.height        = 0.3
+	mesh.height        = 0.04
 	mi.mesh = mesh
+
+	var ripple_noise := FastNoiseLite.new()
+	ripple_noise.noise_type   = FastNoiseLite.TYPE_SIMPLEX
+	ripple_noise.frequency    = 0.15
+	var ripple_tex := NoiseTexture2D.new()
+	ripple_tex.noise         = ripple_noise
+	ripple_tex.as_normal_map = true
+	ripple_tex.bump_strength = 3.0
+	ripple_tex.width  = 128
+	ripple_tex.height = 128
+	ripple_tex.seamless = true
+
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color     = Color(0.30, 0.0, 0.45, 0.35)
-	mat.transparency     = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.emission_enabled = true
-	mat.emission         = Color(0.5, 0.0, 0.7) * 0.4
-	mat.shading_mode     = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.no_depth_test    = true   # prevents z-fighting when zones overlap
+	mat.albedo_color        = Color(0.30, 0.0, 0.45, 0.55)
+	mat.transparency        = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.metallic            = 0.6
+	mat.roughness           = 0.12   # glossy/wet, not matte
+	mat.normal_enabled      = true
+	mat.normal_texture      = ripple_tex
+	mat.normal_scale        = 1.4
+	mat.emission_enabled    = true
+	mat.emission            = Color(0.5, 0.0, 0.7) * 0.25
+	mat.no_depth_test       = true   # prevents z-fighting when zones overlap
 	mi.material_override = mat
 	# Slight Y offset per zone count so layers don't overlap exactly
-	mi.position.y = 0.05 + _zones.size() * 0.01
+	mi.position.y = 0.02 + _zones.size() * 0.01
 	zone.add_child(mi)
 
 	var lbl := Label3D.new()
