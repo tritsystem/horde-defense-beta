@@ -89,3 +89,43 @@ func _on_connection_failed() -> void:
 @rpc("authority", "call_local", "reliable")
 func rpc_load_match() -> void:
 	get_tree().change_scene_to_file("res://main.tscn")
+
+
+# ============================================================
+# CREEP DECK VOTE RELAY — Phase 3 of the multiplayer plan.
+# CreepDeckUI.gd's vote state (_all_votes etc.) is a static var, shared
+# across instances only WITHIN one process -- over the network each peer
+# is a separate process, so a non-host client's vote never reached anyone
+# else. This accumulates votes server-side and broadcasts the final deck,
+# reusing CreepDeckUI's own sort/slice/pad tally algorithm unchanged
+# (see CreepDeckUI.gd's tally_networked_votes).
+# ============================================================
+var _deck_votes : Dictionary = {}   # player_id -> Array of creep ids, server-only
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_cast_vote(player_id: int, voted_ids: Array) -> void:
+	if not multiplayer.is_server(): return
+	_deck_votes[player_id] = voted_ids
+	var total : int = multiplayer.get_peers().size() + 1
+	print("[NetworkManager] vote received from player %d (%d/%d)" % [player_id, _deck_votes.size(), total])
+	if _deck_votes.size() < total: return
+
+	# Whichever CreepDeckUI instance exists on the server (the host's own
+	# local player, since only the server ever reaches this point) supplies
+	# the tally algorithm and the unvoted-creep padding pool -- mirrors the
+	# existing local-multiplayer behavior of using the last-confirming
+	# instance's unlock catalogue for padding.
+	var ui := get_tree().get_first_node_in_group("creep_deck_ui")
+	var final_deck : Array = []
+	if is_instance_valid(ui) and ui.has_method("tally_networked_votes"):
+		final_deck = ui.tally_networked_votes(_deck_votes)
+	_deck_votes.clear()
+	rpc_apply_final_deck.rpc(final_deck)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_final_deck(deck: Array) -> void:
+	for ui in get_tree().get_nodes_in_group("creep_deck_ui"):
+		if is_instance_valid(ui) and ui.has_method("_finish"):
+			ui._finish(deck.duplicate())

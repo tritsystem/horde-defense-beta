@@ -372,6 +372,15 @@ var _bat_mesh    : QuadMesh = null
 
 func _ready() -> void:
 	add_to_group("game_manager")
+	# Dedicated, unambiguous group for this node specifically: main.tscn also
+	# has a separate legacy "GameManager" node (scripts/game_manager.gd) in
+	# the shared "game_manager" group, and get_first_node_in_group("game_manager")
+	# does not reliably resolve to this node over that one (confirmed via
+	# repeated headless multiplayer smoke tests -- it picked the wrong node
+	# in 2 of 3 runs). Phase 3's networked economy RPCs need this node
+	# specifically (spend_gold/get_gold/rpc_request_* all live here, not on
+	# the legacy node), so they look up "economy_controller" instead.
+	add_to_group("economy_controller")
 	_init_money()
 	_apply_night_lighting()
 	_build_atmosphere()
@@ -635,12 +644,20 @@ func _compute_bounty(team: int, streak: int) -> int:
 func get_gold(team: int)           -> int:  return team_money.get(team, 0)
 func add_gold(team: int, amt: int) -> void: _add_gold(team, amt)
 func set_gold(team: int, amt: int) -> void:
+	if not (multiplayer.is_server() or not multiplayer.has_multiplayer_peer()): return
 	team_money[team] = clampi(amt, 0, GOLD_SOFT_CAP)
 	money_changed.emit(team, team_money[team])
 
 func award_gold(team: int, amt: int) -> void: _add_gold(team, amt)
 
+## Server-authoritative: on a client this only validates and reports
+## success/failure locally, it does NOT mutate shared state. Networked
+## callers (shopui.gd etc.) must go through rpc_request_spend_gold instead --
+## a direct call here from a non-authoritative peer is a no-op that returns
+## false, matching insufficient-funds behavior so existing callers degrade
+## safely rather than silently diverging local state.
 func spend_gold(team: int, amt: int) -> bool:
+	if not (multiplayer.is_server() or not multiplayer.has_multiplayer_peer()): return false
 	if team_money.get(team, 0) < amt:
 		return false
 	team_money[team] -= amt
@@ -648,14 +665,69 @@ func spend_gold(team: int, amt: int) -> bool:
 	return true
 
 func _add_gold(team: int, amt: int) -> void:
+	if not (multiplayer.is_server() or not multiplayer.has_multiplayer_peer()): return
 	team_money[team] = clampi(team_money.get(team, 0) + amt, 0, GOLD_SOFT_CAP)
 	money_changed.emit(team, team_money[team])
+
+
+## Request/reply pair for non-authoritative peers: a client calls
+## rpc_request_spend_gold, the server validates+spends against its own
+## authoritative team_money, then pushes the resulting balance to every
+## other peer as a display-only mirror via rpc_sync_gold. Silent no-op on
+## rejection (insufficient funds or a non-server receiving it) -- matches
+## CombatRelay.gd's request_hit convention of not round-tripping failure.
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_spend_gold(team: int, amt: int) -> void:
+	if not multiplayer.is_server(): return
+	if spend_gold(team, amt):
+		rpc_sync_gold.rpc(team, team_money[team])
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_sync_gold(team: int, amount: int) -> void:
+	team_money[team] = amount
+	money_changed.emit(team, amount)
+
+
+## Request/reply pair for base upgrades (shopui.gd's _on_base_upgrade_selected).
+## Base is a static main.tscn child like GamePhaseController itself -- every
+## peer has its own disconnected local copy, so its HP needs the same
+## request/apply/broadcast shape as gold rather than a direct local mutation.
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_base_upgrade(team: int, amount: int, cost: int) -> void:
+	if not multiplayer.is_server(): return
+	if not spend_gold(team, cost): return
+	_apply_base_upgrade(team, amount)
+	rpc_apply_base_upgrade.rpc(team, amount)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_base_upgrade(team: int, amount: int) -> void:
+	_apply_base_upgrade(team, amount)
+
+
+## Mirrors shopui.gd's _on_base_upgrade_selected effect exactly.
+func _apply_base_upgrade(team: int, amount: int) -> void:
+	for b in get_tree().get_nodes_in_group("bases"):
+		if "team_id" in b and int(b.get("team_id")) == team:
+			if b.has_method("add_health"):
+				b.add_health(amount)
+			else:
+				if "max_health"     in b: b.max_health     += amount
+				if "current_health" in b: b.current_health += amount
+			return
 
 
 # ══════════════════════════════════════════════════════════════
 # UPGRADES
 # ══════════════════════════════════════════════════════════════
 
+## NOTE: the "apply to every currently-existing unit right now" half of this
+## stays per-peer-local -- creep/zombie units aren't replicated yet (that's
+## Phase 4's server-only hive/zombie simulation, not started). The
+## request/apply/broadcast pair below only guarantees the OTHER half --
+## creep_upgrades[team], which affects future spawns -- stays consistent
+## across peers, same class of known gap as player.gd's add_crystal note.
 func add_creep_upgrade(team: int, upgrade: Dictionary) -> void:
 	creep_upgrades[team].append(upgrade)
 	for unit in get_tree().get_nodes_in_group("units"):
@@ -663,6 +735,19 @@ func add_creep_upgrade(team: int, upgrade: Dictionary) -> void:
 			if unit.has_method("apply_upgrade"):
 				unit.apply_upgrade(upgrade["stat"], upgrade["amount"])
 	print("[Upgrade] T%d: %s" % [team, upgrade.get("label", "?")])
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_creep_tier_upgrade(team: int, upgrade: Dictionary, cost: int) -> void:
+	if not multiplayer.is_server(): return
+	if not spend_gold(team, cost): return
+	add_creep_upgrade(team, upgrade)
+	rpc_apply_creep_tier_upgrade.rpc(team, upgrade)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_creep_tier_upgrade(team: int, upgrade: Dictionary) -> void:
+	add_creep_upgrade(team, upgrade)
 
 
 func get_creep_upgrades(team: int) -> Array:

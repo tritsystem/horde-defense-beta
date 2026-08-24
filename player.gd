@@ -2414,6 +2414,16 @@ func get_magnetized_direction(dir: Vector3) -> Vector3:
 # ============================================================
 # CRYSTALS / ENCHANTS
 # ============================================================
+# NOTE: award-side crystal grants (pickups in crystalshard.gd, kill drops in
+# zombie.gd, quest rewards in questmanager.gd) still fire directly on
+# whichever peer's local logic detects the event -- there's no relay to the
+# server yet, analogous to Phase 2's original zero-damage gap before
+# CombatRelay existed. Not fixed here: Phase 3 as scoped only covers SPEND
+# authority (matching shopui.gd's purchase-flow seam); an award-side relay
+# would be new, unscoped surface. add_crystal() is deliberately left
+# ungated so non-host clients keep earning crystals locally in the
+# meantime, rather than silently regressing to zero income with no relay
+# to replace it.
 func add_crystal(amount: int = 1) -> void:
 	crystals += amount; crystals_changed.emit(crystals)
 	var _rsm_ac := get_node_or_null("/root/RunSaveManager")
@@ -2432,12 +2442,178 @@ func _enchant_name(t: int) -> String:
 	var names := ["None","Fire","Ice","Poison","Electric","Shadow","Vampiric"]
 	return names[clampi(t, 0, names.size()-1)]
 
+## Server-authoritative, mirrors game_phase_script.gd's spend_gold: crystals
+## live on a peer-authoritative Player node, so this node's own
+## is_multiplayer_authority() can't be trusted for spend validation (the
+## owning peer controls it). Gate on multiplayer.is_server() instead -- on
+## a non-host client this is a no-op returning false, same as insufficient
+## funds. Networked callers must go through rpc_request_spend_crystals.
 func spend_crystals(amount: int) -> bool:
+	if not (multiplayer.is_server() or not multiplayer.has_multiplayer_peer()): return false
 	if crystals < amount: return false
 	crystals -= amount; crystals_changed.emit(crystals)
 	var _rsm_sc := get_node_or_null("/root/RunSaveManager")
 	if is_instance_valid(_rsm_sc): _rsm_sc.set_player_crystals(player_id, crystals)
 	return true
+
+
+## Request/reply pair for non-authoritative peers, same shape as
+## game_phase_script.gd's rpc_request_spend_gold/rpc_sync_gold. Verifies the
+## sender actually owns this Player node before spending its crystals --
+## unlike team gold (legitimately shared), crystals are personal, so this
+## check is required for correctness, not just anti-cheat hardening.
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_spend_crystals(amount: int) -> void:
+	if not multiplayer.is_server(): return
+	var sender_id := multiplayer.get_remote_sender_id()
+	if int(get_multiplayer_authority()) != sender_id:
+		push_warning("[player.gd] rpc_request_spend_crystals: peer %d tried to spend crystals it doesn't own" % sender_id)
+		return
+	if spend_crystals(amount):
+		rpc_sync_crystals.rpc(crystals)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_sync_crystals(amount: int) -> void:
+	crystals = amount
+	crystals_changed.emit(crystals)
+
+
+# ============================================================
+# NETWORKED PURCHASES — player/weapon/ability upgrades, funded by
+# team gold (game_phase_script.gd's GamePhaseController). Same
+# request/reply shape as the crystal RPCs above. Trust level matches
+# rpc_request_spend_gold: the client-reported cost is trusted and
+# validated only by spend_gold's own funds check -- this is PvE
+# co-op (see plan's stated threat model), not anti-cheat hardening.
+# ============================================================
+
+func _team_gold_controller() -> Node:
+	# "economy_controller" (not the shared "game_manager" group) --
+	# main.tscn has a second, unrelated node also in "game_manager" that
+	# doesn't implement spend_gold/get_gold. See game_phase_script.gd's
+	# _ready() for the full explanation.
+	return get_tree().get_first_node_in_group("economy_controller")
+
+
+func _spend_team_gold(cost: int) -> bool:
+	var gm := _team_gold_controller()
+	if not is_instance_valid(gm) or not gm.spend_gold(team_id, cost): return false
+	gm.rpc_sync_gold.rpc(team_id, gm.get_gold(team_id))
+	return true
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_player_upgrade(stat: String, amount: float, cost: int) -> void:
+	if not multiplayer.is_server(): return
+	var sender_id := multiplayer.get_remote_sender_id()
+	if int(get_multiplayer_authority()) != sender_id:
+		push_warning("[player.gd] rpc_request_player_upgrade: peer %d tried to upgrade a player it doesn't own" % sender_id)
+		return
+	if not _spend_team_gold(cost): return
+	apply_upgrade(stat, amount)
+	rpc_apply_player_upgrade.rpc(stat, amount)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_player_upgrade(stat: String, amount: float) -> void:
+	apply_upgrade(stat, amount)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_weapon_upgrade(weapon_key: String, stat: String, amount: float, cost: int) -> void:
+	if not multiplayer.is_server(): return
+	var sender_id := multiplayer.get_remote_sender_id()
+	if int(get_multiplayer_authority()) != sender_id:
+		push_warning("[player.gd] rpc_request_weapon_upgrade: peer %d tried to upgrade a player it doesn't own" % sender_id)
+		return
+	if not _spend_team_gold(cost): return
+	_apply_weapon_upgrade(weapon_key, stat, amount)
+	rpc_apply_weapon_upgrade.rpc(weapon_key, stat, amount)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_weapon_upgrade(weapon_key: String, stat: String, amount: float) -> void:
+	_apply_weapon_upgrade(weapon_key, stat, amount)
+
+
+## Mirrors shopui.gd's _apply_weapon_stat -- duplicated here (not called
+## cross-script) since this needs to run identically on every peer's own
+## local weapon nodes, reached via weapon_manager, not through the UI layer.
+func _apply_weapon_upgrade(weapon_key: String, stat: String, amount: float) -> void:
+	if not is_instance_valid(weapon_manager) or not weapon_manager.has_method("get_weapons_of_type"): return
+	for w in weapon_manager.get_weapons_of_type(weapon_key):
+		match stat:
+			"damage":
+				if "damage" in w: w.set("damage", float(w.get("damage")) + amount)
+			"fire_rate":
+				if "fire_rate" in w: w.set("fire_rate", maxf(float(w.get("fire_rate")) * (1.0 - amount), 0.05))
+			"ammo_cap":
+				if "max_ammo" in w:
+					var inc : float = float(w.get("max_ammo")) * amount if amount < 1.0 else amount
+					w.set("max_ammo", int(float(w.get("max_ammo")) + inc))
+					w.set("ammo",     int(float(w.get("ammo"))     + inc))
+			"proj_speed":
+				if "proj_speed"       in w: w.set("proj_speed",       float(w.get("proj_speed"))       * (1.0 + amount))
+				if "bullet_speed"     in w: w.set("bullet_speed",     float(w.get("bullet_speed"))     * (1.0 + amount))
+				if "projectile_speed" in w: w.set("projectile_speed", float(w.get("projectile_speed")) * (1.0 + amount))
+			"attack_range":
+				if "attack_range" in w: w.set("attack_range", float(w.get("attack_range")) * (1.0 + amount))
+			"swing_speed":
+				if "swing_cooldown" in w: w.set("swing_cooldown", maxf(float(w.get("swing_cooldown")) * (1.0 - amount), 0.1))
+				if "attack_speed"   in w: w.set("attack_speed",   float(w.get("attack_speed"))   * (1.0 + amount))
+			"blast_radius":
+				if "explosion_radius" in w: w.set("explosion_radius", float(w.get("explosion_radius")) * (1.0 + amount))
+			"burn_time":
+				if "burn_duration" in w: w.set("burn_duration", float(w.get("burn_duration")) * (1.0 + amount))
+			"range":
+				if "range"     in w: w.set("range",     float(w.get("range"))     * (1.0 + amount))
+				if "max_range" in w: w.set("max_range", float(w.get("max_range")) * (1.0 + amount))
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_ability_upgrade(slot: int, upg_type: String, amount: float, cost: int) -> void:
+	if not multiplayer.is_server(): return
+	var sender_id := multiplayer.get_remote_sender_id()
+	if int(get_multiplayer_authority()) != sender_id:
+		push_warning("[player.gd] rpc_request_ability_upgrade: peer %d tried to upgrade a player it doesn't own" % sender_id)
+		return
+	if slot < 0 or slot >= ability_slots.size() or ability_slots[slot] == null: return
+	if not _spend_team_gold(cost): return
+	_apply_ability_upgrade(slot, upg_type, amount)
+	rpc_apply_ability_upgrade.rpc(slot, upg_type, amount)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_ability_upgrade(slot: int, upg_type: String, amount: float) -> void:
+	_apply_ability_upgrade(slot, upg_type, amount)
+
+
+func _apply_ability_upgrade(slot: int, upg_type: String, amount: float) -> void:
+	if slot < 0 or slot >= ability_slots.size() or ability_slots[slot] == null: return
+	if upg_type == "cooldown":
+		ability_slots[slot]["cooldown"] = maxf(ability_slots[slot].get("cooldown", 120.0) - amount, 10.0)
+	elif upg_type == "duration":
+		ability_slots[slot]["duration"] = ability_slots[slot].get("duration", 5.0) + amount
+	if has_signal("abilities_changed"): abilities_changed.emit()
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_crystal_enchant(enchant_idx: int, cost: int, bonus: float) -> void:
+	if not multiplayer.is_server(): return
+	var sender_id := multiplayer.get_remote_sender_id()
+	if int(get_multiplayer_authority()) != sender_id:
+		push_warning("[player.gd] rpc_request_crystal_enchant: peer %d tried to spend crystals it doesn't own" % sender_id)
+		return
+	if not spend_crystals(cost): return
+	upgrade_enchant(enchant_idx, bonus)
+	rpc_apply_crystal_enchant.rpc(enchant_idx, bonus)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_crystal_enchant(enchant_idx: int, bonus: float) -> void:
+	upgrade_enchant(enchant_idx, bonus)
+
 
 func _enchant_nearby_zombies() -> void:
 	var enchant_type : int = 0

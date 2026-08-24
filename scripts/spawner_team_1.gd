@@ -153,7 +153,13 @@ func spawn_purchased_creep(scene: PackedScene, owner_player: Node) -> Node:
 	var creep = scene.instantiate()
 	if creep == null: return null
 	_apply_identity(creep, owner_player)
-	get_tree().current_scene.add_child(creep)
+	# Add under PurchaseRelay's MultiplayerSpawner-watched root so networked
+	# purchases replicate to every peer -- falls back to current_scene when
+	# PurchaseRelay isn't present (shouldn't happen, it's an autoload, but
+	# keeps this function safe to call from anywhere).
+	var _pr := get_node_or_null("/root/PurchaseRelay")
+	var _target : Node = _pr.spawn_root() if is_instance_valid(_pr) else get_tree().current_scene
+	_target.add_child(creep)
 	creep.global_position = global_position + _line_offset(0, 1)
 	creep.add_to_group("units")
 	creep.add_to_group("lane_" + Lane.keys()[lane_id].to_lower())

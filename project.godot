@@ -50,6 +50,7 @@ AudioManager="*uid://cah0em8ab833v"
 RunSaveManager="*res://RunSaveManager.gd"
 NetworkManager="*res://NetworkManager.gd"
 CombatRelay="*res://scripts/net/CombatRelay.gd"
+PurchaseRelay="*res://scripts/net/PurchaseRelay.gd"
 
 [global_group]
 

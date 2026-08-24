@@ -637,7 +637,26 @@ func _on_confirm() -> void:
 		_finish(_selected.duplicate())
 		return
 
-	# Multiplayer vote path
+	# Networked vote path: _all_votes/_confirmed_count are static vars shared
+	# only within one process, useless across peers -- send the vote to
+	# NetworkManager's server-side accumulator instead (see
+	# NetworkManager.gd's rpc_cast_vote / tally_networked_votes above).
+	# rpc_id(1, ...) targeting self resolves to a plain local call when this
+	# peer IS the server, same convention as shopui.gd's purchase RPCs.
+	if NetworkManager.is_networked:
+		NetworkManager.rpc_cast_vote.rpc_id(1, _player_id, _selected.duplicate())
+		emit_signal("vote_cast", _player_id, _selected.duplicate())
+		var net_btn := find_child("ConfirmBtn", true, false) as Button
+		if is_instance_valid(net_btn):
+			net_btn.disabled = true
+			net_btn.text     = "✓ LOCKED"
+		var wl := find_child("WaitLabel", true, false) as Label
+		if is_instance_valid(wl):
+			wl.visible = true
+			wl.text    = "Vote sent — waiting for other players…"
+		return
+
+	# Multiplayer vote path (local split-screen)
 	_all_votes[_player_id] = _selected.duplicate()
 	_confirmed_count       += 1
 	emit_signal("vote_cast", _player_id, _selected.duplicate())
@@ -665,30 +684,36 @@ func _broadcast_wait_label() -> void:
 
 
 func _tally_and_finish() -> void:
-	# Count votes per creep
-	var counts : Dictionary = {}
-	for votes in _all_votes.values():
-		for id in votes:
-			counts[id] = counts.get(id, 0) + 1
-
-	# Sort by vote count descending
-	var sorted_ids := counts.keys()
-	sorted_ids.sort_custom(func(a, b): return counts[a] > counts[b])
-	_final_deck = sorted_ids.slice(0, DECK_SIZE)
-
-	# Pad with unvoted creeps if needed
-	if _final_deck.size() < DECK_SIZE:
-		for cr in _all_creeps:
-			if _final_deck.size() >= DECK_SIZE:
-				break
-			if not (cr["id"] in _final_deck):
-				_final_deck.append(cr["id"])
-
+	_final_deck = tally_networked_votes(_all_votes)
 	print("[DeckUI] Final voted deck: %s" % str(_final_deck))
 
 	for ui in get_tree().get_nodes_in_group("creep_deck_ui"):
 		if is_instance_valid(ui):
 			ui._finish(_final_deck.duplicate())
+
+
+## Same sort/slice/pad tally algorithm _tally_and_finish always used,
+## extracted so NetworkManager.gd's rpc_cast_vote can reuse it unchanged
+## over a server-accumulated votes dict instead of the static _all_votes
+## (which only shares votes within one process -- useless across peers).
+func tally_networked_votes(votes: Dictionary) -> Array:
+	var counts : Dictionary = {}
+	for voted in votes.values():
+		for id in voted:
+			counts[id] = counts.get(id, 0) + 1
+
+	var sorted_ids := counts.keys()
+	sorted_ids.sort_custom(func(a, b): return counts[a] > counts[b])
+	var deck : Array = sorted_ids.slice(0, DECK_SIZE)
+
+	if deck.size() < DECK_SIZE:
+		for cr in _all_creeps:
+			if deck.size() >= DECK_SIZE:
+				break
+			if not (cr["id"] in deck):
+				deck.append(cr["id"])
+
+	return deck
 
 
 func _finish(deck: Array) -> void:

@@ -260,6 +260,14 @@ func _ready() -> void:
 
 	game_manager = get_tree().get_first_node_in_group("game_manager")
 
+	# Register every purchasable scene with PurchaseRelay's spawner on every
+	# peer (these arrays are editor-assigned consts, identical per player)
+	# so any client can instantiate a server-replicated purchase, not just
+	# the buyer -- MultiplayerSpawner requires the scene known in advance.
+	for _sc in turret_scenes:        PurchaseRelay.register_scene(_sc)
+	for _sc in attack_creep_scenes:  PurchaseRelay.register_scene(_sc)
+	for _sc in defend_creep_scenes:  PurchaseRelay.register_scene(_sc)
+
 	_build_shop_ui()
 	_build_all_tabs()
 	_init_patrol_editor()
@@ -1543,6 +1551,9 @@ func _buy_crystal_upgrade(enchant_idx: int, cost: int, bonus: float) -> void:
 	if not is_instance_valid(player): _show_status("⚠ No player bound"); return
 	var crystals : int = int(player.get("crystals") if "crystals" in player else 0)
 	if crystals < cost: _show_status("⚠ Need %d ✦ crystals" % cost); return
+	if NetworkManager.is_networked:
+		player.rpc_request_crystal_enchant.rpc_id(1, enchant_idx, cost, bonus)
+		return
 	if not player.has_method("spend_crystals") or not player.spend_crystals(cost):
 		_show_status("⚠ Not enough crystals"); return
 	if player.has_method("upgrade_enchant"):
@@ -1769,6 +1780,20 @@ func _place_turret() -> void:
 	if not hit is Vector3: return
 	if not _is_placement_valid(hit): _show_status("⚠ Too far from base!"); return
 	var cost2 := turret_costs[_current_turret_index] if _current_turret_index < turret_costs.size() else 500
+	# Networked: server spawns the turret under PurchaseRelay's
+	# MultiplayerSpawner-watched root and it replicates to every peer,
+	# rather than each client instantiating its own disconnected copy.
+	if NetworkManager.is_networked:
+		var owner_path : NodePath = player.get_path() if is_instance_valid(player) else NodePath()
+		PurchaseRelay.rpc_request_buy_turret.rpc_id(1, _player_team_id, _placement_scene.resource_path,
+			hit, _ghost_rotation_y, owner_path, cost2)
+		_destroy_ghost()
+		_placement_scene = null; _current_turret_index = -1; _ghost_rotation_y = 0.0
+		_state = State.OPEN
+		if is_instance_valid(placement_hint_label): placement_hint_label.visible = false
+		_panel_visible(true)
+		_show_status("✅ Turret requested…")
+		return
 	if not _check_funds(cost2): return
 	var inst := _placement_scene.instantiate() as Node3D
 	get_tree().current_scene.add_child(inst)
@@ -1825,6 +1850,20 @@ func _on_player_upgrade_selected(index: int) -> void:
 	var stat : String     = upg["stat"]
 	var base_cost : int   = PLAYER_UPGRADE_COSTS[index] if index < PLAYER_UPGRADE_COSTS.size() else 0
 	var cost : int        = _scaled_upgrade_cost(base_cost, "player_" + stat)
+	# Networked: send the request and return -- the server validates+spends
+	# gold, applies the upgrade to its own authoritative Player copy (needed
+	# for CombatRelay's damage calc to see it), then broadcasts to every
+	# peer's mirror. Cost is recorded optimistically here since the shop UI
+	# already gates buttons on local (near-real-time-synced) gold, matching
+	# the plan's "client waits for the replicated result to appear."
+	if NetworkManager.is_networked:
+		if not is_instance_valid(player): return
+		player.rpc_request_player_upgrade.rpc_id(1, stat, upg["amount"], cost)
+		_record_upgrade_purchase("player_" + stat)
+		var next_cost_net : int = _scaled_upgrade_cost(base_cost, "player_" + stat)
+		_show_status("⬆ %s requested…  (next: %d 🪙)" % [upg["label"], next_cost_net])
+		_refresh_player_upgrade_tab()
+		return
 	if not _check_funds(cost): return
 	_record_upgrade_purchase("player_" + stat)
 	if is_instance_valid(player) and player.has_method("apply_upgrade"):
@@ -1835,8 +1874,23 @@ func _on_player_upgrade_selected(index: int) -> void:
 
 func _on_base_upgrade_selected(index: int) -> void:
 	var cost : int = BASE_UPGRADE_COSTS[index] if index < BASE_UPGRADE_COSTS.size() else 0
-	if not _check_funds(cost): return
 	var upg : Dictionary = BASE_UPGRADES[index]
+	# Networked: Base is a static main.tscn child like GamePhaseController --
+	# every peer has its own disconnected local copy, so HP needs the
+	# request/apply/broadcast shape, same as gold, rather than a direct
+	# local mutation.
+	if NetworkManager.is_networked:
+		# Resolved fresh via "economy_controller" rather than the cached
+		# `game_manager` var above -- main.tscn has a second, unrelated
+		# node also in the shared "game_manager" group that doesn't
+		# implement rpc_request_base_upgrade. See game_phase_script.gd's
+		# _ready() for the full explanation.
+		var econ := get_tree().get_first_node_in_group("economy_controller")
+		if not is_instance_valid(econ): _show_status("⚠ No GameManager!"); return
+		econ.rpc_request_base_upgrade.rpc_id(1, _player_team_id, upg["amount"], cost)
+		_show_status("🏯 %s requested…" % upg["label"])
+		return
+	if not _check_funds(cost): return
 	for b in get_tree().get_nodes_in_group("bases"):
 		if "team_id" in b and b.team_id == _player_team_id:
 			if b.has_method("add_health"): b.add_health(upg["amount"])
@@ -1851,9 +1905,20 @@ func _on_creep_upgrade_selected(index: int, tid: int) -> void:
 	var stat : String     = upg["stat"]
 	var base_cost : int   = CREEP_UPGRADE_COSTS[index] if index < CREEP_UPGRADE_COSTS.size() else 0
 	var cost : int        = _scaled_upgrade_cost(base_cost, "creep_" + stat)
+	upg["team_id"] = tid
+	if NetworkManager.is_networked:
+		# See _on_base_upgrade_selected's comment above -- same
+		# "economy_controller" vs shared "game_manager" group ambiguity.
+		var econ := get_tree().get_first_node_in_group("economy_controller")
+		if not is_instance_valid(econ): _show_status("⚠ No GameManager!"); return
+		econ.rpc_request_creep_tier_upgrade.rpc_id(1, tid, upg, cost)
+		_record_upgrade_purchase("creep_" + stat)
+		var next_cost_net : int = _scaled_upgrade_cost(base_cost, "creep_" + stat)
+		_show_status("⬆ T%d %s requested…  (next: %d 🪙)" % [tid, upg["label"], next_cost_net])
+		_refresh_creep_upgrade_tab()
+		return
 	if not _check_funds(cost): return
 	_record_upgrade_purchase("creep_" + stat)
-	upg["team_id"] = tid
 	if is_instance_valid(game_manager) and game_manager.has_method("add_creep_upgrade"):
 		game_manager.add_creep_upgrade(tid, upg)
 	var next_cost : int = _scaled_upgrade_cost(base_cost, "creep_" + stat)
@@ -1866,6 +1931,10 @@ func _on_ability_upgrade_selected(index: int) -> void:
 	var slot : int        = upg["slot"]
 	var data = player.ability_slots[slot]
 	if data == null: _show_status("⚠ No ability in slot %d — equip one first!" % slot); return
+	if NetworkManager.is_networked:
+		player.rpc_request_ability_upgrade.rpc_id(1, slot, upg["type"], upg["amount"], upg["cost"])
+		_show_status("⬆ %s requested…" % upg["label"])
+		return
 	if not _check_funds(upg["cost"]): return
 	if upg["type"] == "cooldown":
 		player.ability_slots[slot]["cooldown"] = maxf(player.ability_slots[slot].get("cooldown",120.0) - upg["amount"], 10.0)
@@ -1952,6 +2021,23 @@ func _picker_select_all() -> void:
 func _picker_confirm_purchase() -> void:
 	if _picker_selected_index < 0: return
 	var entry : Dictionary = _creep_catalogue[_picker_selected_index]
+	# Networked: server spawns the creep(s) under PurchaseRelay's
+	# MultiplayerSpawner-watched root and they replicate to every peer.
+	# NOTE: the outside-the-walls repositioning _place_defense_creep_outside_base
+	# does for defense creeps below is NOT ported server-side (needs a
+	# ground raycast, more than this seam's scope) -- a networked defense
+	# creep purchase spawns at the spawner's default lane position instead
+	# of nudged outside the base walls. Known, bounded simplification, same
+	# class as Phase 2's rocket-splash caveat.
+	if NetworkManager.is_networked:
+		if not is_instance_valid(player): return
+		PurchaseRelay.rpc_request_buy_creep.rpc_id(1, _player_team_id, entry["scene"].resource_path,
+			entry["kind"], player.get_path(), entry["cost"], creep_spawn_count)
+		_show_status("%s %s requested…" % ["⚔" if entry["kind"]=="attack" else "🛡", entry["label"]])
+		_picker_selected_index = -1
+		for b in _picker_row_btns: b.button_pressed = false
+		_picker_detail.visible = false; _refresh_picker_gold()
+		return
 	if not _check_funds(entry["cost"]): return
 	var spawned := false
 	for s in get_tree().get_nodes_in_group("creep_spawner"):
@@ -2214,10 +2300,19 @@ func _populate_weapon_upgrade_tab() -> void:
 
 func _on_weapon_upgrade_selected(weapon_key: String, upg: Dictionary) -> void:
 	var cost : int = upg["cost"]
-	if not _check_funds(cost): return
 	if not is_instance_valid(player): return
 	var stat   : String = upg["stat"]
 	var amount : float  = upg["amount"]
+	# Networked: CombatRelay.gd reads weapon.get("damage") server-side to
+	# compute damage, so a weapon-stat upgrade only applied to this client's
+	# own local weapon copy would be invisible to the server's damage calc.
+	# Route through player.gd's rpc_request_weapon_upgrade instead, which
+	# applies to the server's authoritative copy and broadcasts the mirror.
+	if NetworkManager.is_networked:
+		player.rpc_request_weapon_upgrade.rpc_id(1, weapon_key, stat, amount, cost)
+		_show_status("⬆ %s requested…" % upg["label"])
+		return
+	if not _check_funds(cost): return
 	# Apply to the matching weapon in WeaponManager
 	var wm : Node = player.get("weapon_manager") if "weapon_manager" in player else null
 	if not is_instance_valid(wm): return
