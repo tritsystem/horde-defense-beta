@@ -110,12 +110,22 @@ const BAT_FLOCK_COUNT : int = 6   # number of independent flight-path flocks
 const BAT_PER_FLOCK   : int = 20  # bats per flock
 const WIND_COUNT    : int = 24
 
-const NIGHT_SUN_ENERGY     : float = 0.06
-const NIGHT_SUN_COLOR      : Color = Color(0.55, 0.28, 0.10)
-const NIGHT_AMBIENT_ENERGY : float = 0.10
-const SKY_TOP_COLOR        : Color = Color(0.05, 0.03, 0.02)
-const SKY_HORIZON_COLOR    : Color = Color(0.55, 0.22, 0.04)
-const SKY_BOTTOM_COLOR     : Color = Color(0.08, 0.04, 0.02)
+# DARK-HORROR RESKIN (2026-08-24, see theme_horror/HorrorTheme.gd): this
+# was a dim, purely orange-red "Halloween ghost" night palette. Retinted
+# toward this project's sickly desaturated green/amber/brown horror
+# palette and given a real harsh key light instead of a near-invisible
+# one (0.06 -> 0.22 sun energy) -- Wolfenstein-style mood wants a bright,
+# hard-edged light source against DEEP shadow, not just uniform dimness.
+# This is the script that's actually live at runtime (see HorrorTheme.gd
+# for the full call-chain trace); main.tscn's saved Environment/
+# DirectionalLight3D color+energy values are NOT -- only DirectionalLight3D's
+# shadow_blur was worth touching there.
+const NIGHT_SUN_ENERGY     : float = 0.22
+const NIGHT_SUN_COLOR      : Color = Color(0.62, 0.46, 0.18)
+const NIGHT_AMBIENT_ENERGY : float = 0.08
+const SKY_TOP_COLOR        : Color = Color(0.04, 0.045, 0.03)
+const SKY_HORIZON_COLOR    : Color = Color(0.34, 0.28, 0.12)
+const SKY_BOTTOM_COLOR     : Color = Color(0.05, 0.045, 0.03)
 
 # ══════════════════════════════════════════════════════════════
 # EXPORTS
@@ -123,7 +133,7 @@ const SKY_BOTTOM_COLOR     : Color = Color(0.08, 0.04, 0.02)
 
 @export var atmosphere_transition_time : float = 2.0
 @export var fog_density                : float = 0.008
-@export var fog_color                  : Color = Color(0.45, 0.50, 0.62, 1.0)
+@export var fog_color                  : Color = Color(0.24, 0.27, 0.16, 1.0)   # was a cool blue-grey; now sickly olive
 @export var scary_sound_volume_db      : float = -6.0
 @export var scary_sound                : AudioStreamPlayer
 @export var night_ambience             : AudioStreamPlayer
@@ -269,6 +279,24 @@ class StateCombat extends State:
 			var rm := _ctrl.get_tree().get_first_node_in_group("revive_manager")
 			if is_instance_valid(rm) and rm.has_method("reset"): rm.reset()
 			_ctrl._spawn_starting_turrets()
+			# REAL FIX: "rats and bats should be an option given right off the
+			# start, no quest requirement" -- the rat/bat pack choice
+			# (AllyChoiceUI.gd) used to only ever appear after completing the
+			# "Call of the Wild" quest (15 zombie kills). Fire it directly at
+			# round 1 start instead of waiting on that quest -- the quest
+			# pool entry itself is removed below in questmanager.gd so it
+			# can't also fire a second time later.
+			# Only the first player, not a loop over every player: AllyChoiceUI
+			# is a single full-screen (not per-viewport) panel that replaces
+			# itself on every emit (queue_frees the previous one), so firing
+			# it once per player in the same frame would just stomp every
+			# panel but the last -- a pre-existing single-player-oriented
+			# design, not something to silently redesign as part of this fix.
+			var qm := _ctrl.get_tree().get_first_node_in_group("quest_manager")
+			var first_player := _ctrl.get_tree().get_first_node_in_group("player")
+			if is_instance_valid(qm) and qm.has_signal("ally_choice_available") and is_instance_valid(first_player):
+				var pid : int = int(first_player.get("player_id")) if "player_id" in first_player else 1
+				qm.ally_choice_available.emit(pid)
 		# Checked every round, not just round 1: guarantees a starter Builder
 		# ally exists no matter what happens to the previous one (it's
 		# undamageable so normally can't be lost, but this is the robust
@@ -730,6 +758,34 @@ func _apply_base_upgrade(team: int, amount: int) -> void:
 			return
 
 
+## Same request/apply/broadcast shape as base upgrades, for the creep-deck
+## progressive-unlock economy (shopui.gd's "Unlock New Creep" row). Every
+## peer runs its own separate CreepDeckManager autoload instance (not
+## itself replicated), so each one applies the same deterministic unlock
+## locally on broadcast rather than syncing a shared object.
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_unlock_creep(team: int, pid: int, cost: int) -> void:
+	if not multiplayer.is_server(): return
+	if not spend_gold(team, cost): return
+	var unlocked_id : String = _apply_unlock_creep(pid)
+	if unlocked_id != "":
+		rpc_apply_unlock_creep.rpc(pid, unlocked_id)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_apply_unlock_creep(pid: int, creep_id: String) -> void:
+	var dm := get_tree().get_first_node_in_group("creep_deck_manager")
+	if is_instance_valid(dm) and dm.has_method("add_card_to_deck"):
+		dm.add_card_to_deck(pid, creep_id)
+
+
+func _apply_unlock_creep(pid: int) -> String:
+	var dm := get_tree().get_first_node_in_group("creep_deck_manager")
+	if is_instance_valid(dm) and dm.has_method("unlock_next"):
+		return dm.unlock_next(pid)
+	return ""
+
+
 # ══════════════════════════════════════════════════════════════
 # UPGRADES
 # ══════════════════════════════════════════════════════════════
@@ -845,6 +901,19 @@ func _fire_wave_clear_slo_mo() -> void:
 	_slo_mo_guard = false
 
 
+## REAL BUG FIX (2026-08-24): "base being dead should auto end game" -- it
+## never did. basenode.gd::_on_destroyed() has always called
+## gm._on_base_died(team_id) on whatever "game_manager" resolves to, but
+## this method never existed anywhere in the codebase -- has_method()
+## silently skipped the call every single time a base hit 0 HP, so the
+## match just... kept running. The whole real game-over path (_end_game(),
+## already correct and working for "all enemies eliminated") was simply
+## never reached from this direction.
+func _on_base_died(dead_team: int) -> void:
+	var winner : int = 2 if dead_team == 1 else 1
+	_end_game(winner)
+
+
 func _end_game(winner: int = 1) -> void:
 	if get_current_phase() == "done":
 		return
@@ -905,10 +974,10 @@ func _apply_night_lighting() -> void:
 		return
 	env.fog_enabled          = true
 	env.fog_density          = fog_density
-	env.fog_light_color      = Color(0.52, 0.24, 0.06)
+	env.fog_light_color      = Color(0.24, 0.27, 0.15)   # was orange (0.52,0.24,0.06); now sickly olive-amber
 	env.fog_sky_affect       = 0.55
 	env.ambient_light_energy = NIGHT_AMBIENT_ENERGY
-	env.ambient_light_color  = Color(0.50, 0.22, 0.08)
+	env.ambient_light_color  = Color(0.22, 0.24, 0.12)   # was orange (0.50,0.22,0.08); now desaturated olive
 
 
 func _setup_orange_sky() -> void:

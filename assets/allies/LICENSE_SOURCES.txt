@@ -1,0 +1,11 @@
+bat/bat.glb
+  Source: https://poly.pizza/m/hNO9XvjlKa
+  Creator: Quaternius (https://quaternius.com)
+  License: CC0 1.0 Universal (Public Domain) - https://creativecommons.org/publicdomain/zero/1.0/
+  Animations (glTF clip names): Bat_Attack, Bat_Attack2, Bat_Death, Bat_Flying, Bat_Hit
+
+rat/rat.glb
+  Source: https://poly.pizza/m/iltq5bVNaV
+  Creator: Quaternius (https://quaternius.com)
+  License: CC0 1.0 Universal (Public Domain) - https://creativecommons.org/publicdomain/zero/1.0/
+  Animations (glTF clip names): Rat_Attack, Rat_Death, Rat_Idle, Rat_Jump, Rat_Run, Rat_Walk

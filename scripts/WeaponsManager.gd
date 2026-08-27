@@ -12,6 +12,15 @@ var current_index  : int             = -1
 var current_weapon : Node3D          = null
 var _initialized   : bool            = false
 
+## REAL BUG FIX: when set (by team_ally.gd for a puppeted ally), the
+## equipped weapon is positioned at THIS node instead of at a first-person
+## viewmodel offset from `camera`. `_process()`'s camera-relative math below
+## was written assuming the camera IS the viewer's own eyes (true for the
+## real player) -- for a third-person-viewed puppet, that same offset put
+## the gun floating in space near the ally's aim camera (up near head
+## height, disconnected from the hands) instead of in its actual hand.
+var third_person_anchor : Node3D = null
+
 signal weapon_equipped(weapon: Node3D)
 signal weapons_initialized
 
@@ -25,10 +34,26 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	if not is_instance_valid(current_weapon): return
-	if not is_instance_valid(camera): return
 	if not current_weapon.visible: return
-	var vm_pos : Vector3 = _get_vec(current_weapon, "vm_position", Vector3(0.3, -0.25, -0.5))
 	var vm_rot : Vector3 = _get_vec(current_weapon, "vm_rotation", Vector3(0.0, 180.0, 0.0))
+
+	if is_instance_valid(third_person_anchor):
+		# Puppeted third-person ally: position AT the real hand bone
+		# (tracks the animated arm every frame via the BoneAttachment3D
+		# team_ally.gd builds), oriented toward the aim direction (the
+		# camera's own basis, same rotation math as the first-person path
+		# below) rather than the hand bone's own rest-pose orientation --
+		# the bone's basis follows the walk/idle animation, not aim, so
+		# using it directly would point the gun wherever the arm happens
+		# to be swinging instead of at the target.
+		current_weapon.global_position = third_person_anchor.global_position
+		if is_instance_valid(camera):
+			current_weapon.global_basis = camera.global_transform.basis * Basis.from_euler(
+				Vector3(deg_to_rad(vm_rot.x), deg_to_rad(vm_rot.y), deg_to_rad(vm_rot.z)))
+		return
+
+	if not is_instance_valid(camera): return
+	var vm_pos : Vector3 = _get_vec(current_weapon, "vm_position", Vector3(0.3, -0.25, -0.5))
 	var cam_t  : Transform3D = camera.global_transform
 	current_weapon.global_position = cam_t.origin + cam_t.basis * vm_pos
 	current_weapon.global_basis    = cam_t.basis * Basis.from_euler(

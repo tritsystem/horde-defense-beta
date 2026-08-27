@@ -51,6 +51,10 @@ RunSaveManager="*res://RunSaveManager.gd"
 NetworkManager="*res://NetworkManager.gd"
 CombatRelay="*res://scripts/net/CombatRelay.gd"
 PurchaseRelay="*res://scripts/net/PurchaseRelay.gd"
+CreepDeckManager="*res://Creepdeckmanager.gd"
+AIDirector="*res://AIDirector.gd"
+HordeLLM="*res://HordeLLM.gd"
+VoiceboxTTS="*res://VoiceboxTTS.gd"
 
 [global_group]
 

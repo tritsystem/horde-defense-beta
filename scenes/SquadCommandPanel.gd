@@ -74,9 +74,23 @@ func _find_horde_manager() -> void:
 			if player.has_node(node_name):
 				_horde_mgr = player.get_node(node_name); break
 	if not is_instance_valid(_horde_mgr):
+		# REAL BUG FIX: this used to additionally require
+		# `mgr.get_team_id() == _team_id`, assuming one manager instance
+		# PER TEAM. There has only ever been a single global
+		# ZombieHordeManager autoload, which never joined either group and
+		# never implemented get_team_id()/select_all_team()/command_attack()/
+		# etc at all -- so this loop never matched anything, _horde_mgr
+		# stayed permanently null, and every squad command silently
+		# no-op'd ("No zombies!") with zero errors. Fixed on both ends:
+		# ZombieHordeManager now joins "zombie_horde_manager" and
+		# implements the full command API (team-scoped per CALL, not per
+		# manager instance), so just taking the first real candidate here
+		# is correct -- team scoping happens via the _team_id argument
+		# passed into select_all_team()/select_box()/etc below, not by
+		# which manager object answered.
 		for mgr in (get_tree().get_nodes_in_group("horde_manager") +
 					get_tree().get_nodes_in_group("zombie_horde_manager")):
-			if mgr.has_method("get_team_id") and mgr.get_team_id() == _team_id:
+			if mgr.has_method("select_all_team"):
 				_horde_mgr = mgr; break
 	if is_instance_valid(_horde_mgr) and _horde_mgr.has_signal("selection_changed"):
 		if _horde_mgr.selection_changed.is_connected(_on_selection_changed):

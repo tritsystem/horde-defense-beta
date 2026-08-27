@@ -47,6 +47,8 @@ signal turret_upgraded(turret)
 
 
 # ============================================================
+const HorrorTheme = preload("res://theme_horror/HorrorTheme.gd")
+
 func _base_ready() -> void:
 	var _dbg := get_node_or_null("/root/DebugTuningPanel")
 	if _dbg: max_health = _dbg.turret_hp_override
@@ -56,6 +58,12 @@ func _base_ready() -> void:
 	add_to_group("units")
 	_build_health_bar()
 	health_changed.connect(_update_health_bar)
+	# Dark-horror reskin pass: corroded-metal tint on the turret's own
+	# imported gun mesh, skipping the health-bar subtree (needs its own
+	# red/green fill color to stay legible, not a flat metal tint). See
+	# theme_horror/HorrorTheme.gd. Cheap: one-time material_override swap
+	# at spawn, not a per-frame or per-zombie cost.
+	HorrorTheme.apply_grimy_metal_recursive(self, ["TurretHealthBar"])
 
 var _hbar_root : Node3D = null
 var _hbar_fill : MeshInstance3D = null

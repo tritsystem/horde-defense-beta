@@ -173,13 +173,34 @@ func _build_main_panel() -> Control:
 	sub.modulate.a = 0.0
 	root.add_child(sub)
 
+	# BUG FIX (main-menu options cut off below the mode buttons, vault
+	# ledger line 561): this VBoxContainer was previously anchored
+	# directly (top 0.50 / bottom 0.92) with no wrapping ScrollContainer.
+	# A VBoxContainer sizes itself to its children's combined minimum
+	# size and does NOT clip or shrink to its anchor rect -- once enough
+	# buttons/labels/separators existed (mode buttons + descriptions +
+	# separator + Settings + Quit), the container's real height exceeded
+	# the ~42%-of-window anchor band, and everything past that point
+	# rendered off the bottom of the viewport with no way to reach it --
+	# reproduced headlessly: at Godot's default 1152x648 window the QUIT
+	# button's bottom edge sat at y=690 while the viewport height was
+	# only 648. Wrapping it in a ScrollContainer makes the anchor rect
+	# an actual clip+scroll region instead of an ignored suggestion, so
+	# all options stay reachable (scrollable) at any window size instead
+	# of clipped and unreachable.
+	var btns_scroll := ScrollContainer.new()
+	btns_scroll.name = "Buttons"
+	btns_scroll.set_anchor(SIDE_LEFT, 0.12); btns_scroll.set_anchor(SIDE_RIGHT,  0.52)
+	btns_scroll.set_anchor(SIDE_TOP,  0.50); btns_scroll.set_anchor(SIDE_BOTTOM, 0.97)
+	btns_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	btns_scroll.modulate.a = 0.0
+	root.add_child(btns_scroll)
+
 	var btns := VBoxContainer.new()
-	btns.name = "Buttons"
-	btns.set_anchor(SIDE_LEFT, 0.12); btns.set_anchor(SIDE_RIGHT,  0.52)
-	btns.set_anchor(SIDE_TOP,  0.50); btns.set_anchor(SIDE_BOTTOM, 0.92)
+	btns.name = "ButtonsList"
+	btns.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	btns.add_theme_constant_override("separation", 14)
-	btns.modulate.a = 0.0
-	root.add_child(btns)
+	btns_scroll.add_child(btns)
 
 	# Mode separator label
 	var mode_lbl := Label.new()
@@ -643,7 +664,7 @@ func _close_vs() -> void:
 func _animate_in() -> void:
 	var title   := _main_panel.get_node("Title")   as Label
 	var sub     := _main_panel.get_node("Subtitle") as Label
-	var buttons := _main_panel.get_node("Buttons")  as VBoxContainer
+	var buttons := _main_panel.get_node("Buttons")  as Control
 	var tw := create_tween()
 	tw.tween_property(title,   "modulate:a", 1.0, 0.7)
 	tw.tween_property(sub,     "modulate:a", 1.0, 0.5)

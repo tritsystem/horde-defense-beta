@@ -278,6 +278,20 @@ func _spawn_single_egg() -> void:
 	var hit := space.intersect_ray(ray)
 	if not hit.is_empty(): wpos.y = hit.position.y
 
+	# REAL BUG FIX (2026-08-24): "make build up of zombies more gradual" --
+	# _spawn_initial_eggs() creates every one of this hive's max_eggs eggs
+	# in the SAME frame, and every egg got the exact same, unjittered
+	# egg_hatch_time -- so all of them hatch (and dump a full wave each) at
+	# EXACTLY the same moment, every time. With multiple hives active at
+	# once (a whole tier's worth, see game_phase_script.gd::_activate_tier),
+	# that's several synchronized bursts landing simultaneously, which is
+	# what actually reads as "sudden"/"steep" rather than gradual -- not
+	# the total zombie count over time, just how it's clumped in time.
+	# Staggering each egg's own hatch moment spreads the identical total
+	# out into a real ramp instead of a burst, without touching any of the
+	# tier/wave-size/unit-cap balancing elsewhere.
+	var jittered_hatch_time : float = egg_hatch_time + randf_range(0.0, egg_hatch_time * 0.6)
+
 	# Networked: only ever reached on the server (see _deferred_init's gate),
 	# since a client's own local HiveCluster mirror never calls this. Route
 	# through HiveNestManager's replicated egg spawner instead of
@@ -289,7 +303,7 @@ func _spawn_single_egg() -> void:
 		var hnm := get_tree().get_first_node_in_group("hive_nest_manager")
 		if is_instance_valid(hnm):
 			hnm.spawn_networked_egg({
-				"tier": tier, "max_hp": 55.0 + tier * 22.0, "hatch_time": egg_hatch_time,
+				"tier": tier, "max_hp": 55.0 + tier * 22.0, "hatch_time": jittered_hatch_time,
 				"wave_size": egg_wave_size, "creep_ids": creep_pool.duplicate(),
 				"position": wpos, "owner_cluster_path": get_path(),
 			})
@@ -298,7 +312,7 @@ func _spawn_single_egg() -> void:
 	var egg := Egg.new()
 	egg.tier          = tier
 	egg.max_hp        = 55.0 + tier * 22.0
-	egg.hatch_time    = egg_hatch_time
+	egg.hatch_time    = jittered_hatch_time
 	egg.wave_size     = egg_wave_size
 	egg.attack_target = attack_target
 	egg.creep_ids     = creep_pool.duplicate()
@@ -321,7 +335,27 @@ func _on_networked_egg_spawned(egg: Egg) -> void:
 
 
 # ── Patrol guards ─────────────────────────────────────────────
+const PATROL_RETRY_INTERVAL : float = 4.0
+const PATROL_RETRY_MAX      : int   = 15   # ~1 min of retrying before giving up
+var _patrol_retry_count : int = 0
+
 func _spawn_patrol_guards() -> void:
+	_spawn_patrol_guards_batch(patrol_count)
+
+
+## REAL BUG FIX: "LOD logic overrides zombies and disables far spawns".
+## Previously this loop just `break`d the instant ZombieHordeManager's
+## Zone-1 cap (ZONE1_MAX) was full and never tried again -- since this
+## only ever ran once from _deferred_init(), a hive that happened to
+## initialize while the player was already fighting 60 zombies elsewhere
+## lost its patrol guards PERMANENTLY, with zero guards ever spawning at
+## that hive again. The cap itself is a deliberate, measured perf limit
+## (see register_z1's own note) and shouldn't be raised -- what was
+## actually missing is a retry: spawn however many slots are free now,
+## and reschedule the remainder for when slots open back up.
+func _spawn_patrol_guards_batch(remaining: int) -> void:
+	if remaining <= 0: return
+	if not is_instance_valid(self) or not is_inside_tree(): return
 	if not ResourceLoader.exists(GUARD_SCENE):
 		push_warning("[HiveCluster] Guard scene not found: %s" % GUARD_SCENE)
 		return
@@ -330,15 +364,17 @@ func _spawn_patrol_guards() -> void:
 	var circle : Array[Vector3]   = _patrol_circle(global_position, patrol_radius, max(8, patrol_count * 2))
 	var space                     := get_world_3d().direct_space_state
 	var zhm                       := get_node_or_null("/root/ZombieHordeManager")
+	var spawned_this_batch : int  = 0
+	var already_spawned : int     = _patrol_units.size()   # offset so retries continue the same evenly-spaced circle
 
-	for i in patrol_count:
-		# REAL BUG FIX (2026-07-24, severe): no check against ZombieHordeManager's
-		# ZONE1_MAX -- with up to 8 clusters each spawning up to 4 guards, this
-		# uncapped addition to the full-cost physics zombie tier was a real
-		# contributor to severe FPS loss (see register_z1's own fix note).
+	for i in remaining:
 		if is_instance_valid(zhm) and zhm.has_method("can_register_z1") and not zhm.can_register_z1():
 			break
-		var angle     : float   = (float(i) / float(patrol_count)) * TAU
+		# Angle divides by the ORIGINAL patrol_count (not `remaining`), offset
+		# by how many already spawned in earlier batches -- otherwise each
+		# retry batch would recompute its own fresh 0..TAU spacing and guards
+		# from different batches would clump instead of ringing the hive evenly.
+		var angle     : float   = (float(already_spawned + spawned_this_batch) / float(patrol_count)) * TAU
 		var spawn_pos : Vector3 = global_position + Vector3(
 			cos(angle) * patrol_radius * 0.6, 0.5, sin(angle) * patrol_radius * 0.6)
 
@@ -360,6 +396,22 @@ func _spawn_patrol_guards() -> void:
 		if "gold_reward"    in guard: guard.set("gold_reward",    15    + tier * 8)
 		if "detection_range" in guard: guard.set("detection_range", 30.0 + tier * 3.0)
 		if "patrol_points"  in guard: guard.set("patrol_points",  circle)
+		# REAL BUG FIX: "patrol guards run the opposite way off spawn and
+		# never settle down". Every guard at this hive shares the exact
+		# same `circle` array, but zombie.gd's own _patrol_idx always
+		# defaults to 0 -- so regardless of which angle a given guard
+		# actually spawned at (each gets a different one, see `angle`
+		# above), it beelines for circle[0] first, then just oscillates
+		# near that one shared point forever instead of patrolling its
+		# own local arc. Start each guard at whichever point is actually
+		# closest to where it spawned.
+		if "_patrol_idx" in guard and not circle.is_empty():
+			var nearest_idx : int = 0
+			var nearest_d2  : float = INF
+			for ci in circle.size():
+				var d2 : float = spawn_pos.distance_squared_to(circle[ci])
+				if d2 < nearest_d2: nearest_d2 = d2; nearest_idx = ci
+			guard.set("_patrol_idx", nearest_idx)
 		if is_instance_valid(attack_target):
 			if "enemy_base"   in guard: guard.set("enemy_base",   attack_target)
 			if "friendly_base" in guard: guard.set("friendly_base", self)
@@ -391,6 +443,13 @@ func _spawn_patrol_guards() -> void:
 			zhm.register_z1(guard as CharacterBody3D)
 
 		_patrol_units.append(guard)
+		spawned_this_batch += 1
+
+	var still_missing : int = patrol_count - _patrol_units.size()
+	if still_missing > 0 and _patrol_retry_count < PATROL_RETRY_MAX:
+		_patrol_retry_count += 1
+		get_tree().create_timer(PATROL_RETRY_INTERVAL).timeout.connect(
+			_spawn_patrol_guards_batch.bind(still_missing))
 
 
 # ── Defense turrets (higher tier = more, stronger) ────────────

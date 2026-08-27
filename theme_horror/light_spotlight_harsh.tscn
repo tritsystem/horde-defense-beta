@@ -1,0 +1,21 @@
+[gd_scene format=3]
+
+[node name="SpotlightHarsh" type="SpotLight3D"]
+; Reusable "harsh spotlight" preset -- a tight, bright, warm-amber cone
+; with sharp-edged shadow, for hallway/interior Wolfenstein-style pools
+; of light against deep surrounding shadow. Not wired into any scene yet
+; (this project's current map is an open outdoor valley -- see
+; theme_horror/HorrorTheme.gd header for where the outdoor equivalent,
+; the DirectionalLight3D "sun", is actually tuned). Instance this node
+; wherever a future indoor/corridor space wants a dramatic single-source
+; light.
+light_color = Color(0.95, 0.78, 0.42, 1)
+light_energy = 3.2
+light_specular = 0.6
+light_indirect_energy = 0.4
+shadow_enabled = true
+shadow_blur = 0.2
+spot_range = 14.0
+spot_angle = 24.0
+spot_angle_attenuation = 2.2
+spot_attenuation = 1.4

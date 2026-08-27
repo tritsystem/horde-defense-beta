@@ -36,6 +36,24 @@ func _ready() -> void:
 	add_child(_spawner)
 	_spawner.spawn_path = _spawn_root.get_path()
 
+	# REAL BUG FIX: register_scene() itself has no authority guard, but
+	# every ACTUAL caller for zombie.tscn (HiveCluster's guard/turret/
+	# extra-zombie spawning, Egg's wave-spawning) is server-only-gated --
+	# meaning add_spawnable_scene() for zombie.tscn was NEVER being called
+	# on a client's own local spawner at all. Godot requires both sides to
+	# have a scene pre-registered for its replication to work; without
+	# this, a client's spawner doesn't know how to construct the incoming
+	# node and the spawn silently fails -- confirmed via a real 2-instance
+	# test where the client never saw a single hive-spawned zombie, not
+	# even its existence, while the host had 30. shopui.gd already does
+	# this same "register on every peer at boot" for its own known
+	# turret/creep scenes; zombie.tscn needs the identical treatment since
+	# HiveCluster/Egg route their spawns through this same relay.
+	if NetworkManager.is_networked:
+		var zombie_scene := load("res://zombie/zombie.tscn") as PackedScene
+		if is_instance_valid(zombie_scene):
+			register_scene(zombie_scene)
+
 
 func spawn_root() -> Node3D:
 	return _spawn_root

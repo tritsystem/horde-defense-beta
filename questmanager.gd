@@ -31,12 +31,14 @@ const QUEST_POOL : Array = [
 	{"id":"kill_30s",    "label":"Blitz",              "type":"kills_in_time",  "target":3,   "reward_gold":180, "reward_crystals":7,  "icon":"⚡", "window":30.0},
 	# Squad
 	{"id":"squad_10",    "label":"Commander",          "type":"squad_kills",    "target":10,  "reward_gold":200, "reward_crystals":8,  "icon":"🧠"},
-	# Ally choice -- reward_type "ally_choice" is handled specially in
-	# _complete_quest(): instead of auto-granting gold/crystals, it emits
-	# ally_choice_available so a UI can offer the player a choice between
-	# a pack of rats (loot-scavenging + bonus damage) or a pack of bats
-	# (vampiric healing). See rat_ally.gd / bat_ally.gd.
-	{"id":"ally_choice", "label":"Call of the Wild",   "type":"zombie_kills",   "target":15,  "reward_gold":0,   "reward_crystals":0,  "icon":"🐾", "reward_type":"ally_choice"},
+	# Ally choice ("Call of the Wild") REMOVED from the quest pool -- the
+	# rat/bat pack choice (AllyChoiceUI.gd) is no longer quest-gated at
+	# all, per "should be an option given right off the start, no quest
+	# requirement". It now fires directly at round 1 start instead (see
+	# game_phase_script.gd's StateCombat.enter()). reward_type
+	# "ally_choice" handling stays in _complete_quest() below in case this
+	# is ever re-added as an actual quest later, it's just unreferenced
+	# by the pool for now.
 ]
 
 # Active quests per player_id

@@ -7,6 +7,19 @@ extends CharacterBody3D
 var player_id : int = 1
 var team_id   : int = 1
 var device_id : int = -1
+
+# REAL BUG FIX: TeamAlly.gd instances this whole scene as a puppeted AI
+# teammate rig (see team_ally.gd's _build_rig) -- Player.tscn's own root
+# CharacterBody3D IS this script, so its _ready() always ran in full for
+# every ally too, not just real players. That meant every ally spawn
+# also called call_deferred("_show_class_select") (which cascades into
+# _show_deck_ui() once "chosen") and set fps_camera.current = true,
+# fighting the real local player for the viewport camera. Confirmed
+# real, reported live as "ally builder enables creep deck choice, it
+# shouldn't" and "doesn't allow me to pick class at start". team_ally.gd
+# sets this true (via .set(), before add_child) on every rig it builds;
+# real players never touch it, so it stays false by default.
+var is_ai_puppet : bool = false
 # local_input_slot: which LOCAL device-input actions (p{n}_*) this instance reads.
 # In local split-screen, one process owns every player, so this always equals
 # player_id -- unchanged there. Over the network, each client process has
@@ -200,6 +213,14 @@ const FLAME_DURATION    : float = 5.0
 var _purifier_cd        : float = 0.0
 const PURIFIER_COOLDOWN : float = 45.0
 
+# ── Terraform tool (2026-08-24 -- ported from Tribe's real player
+# terraform tool, FPSPlayer.gd's raise_area()/flatten_area() calls) ────
+var _terraform_cd            : float = 0.0
+const TERRAFORM_COOLDOWN     : float = 1.0
+const TERRAFORM_RADIUS       : float = 6.0
+const TERRAFORM_RAISE_DELTA  : float = 3.0
+const TERRAFORM_RANGE        : float = 40.0
+
 var ability_slots     : Array        = [null]
 var ability_cooldowns : Array[float] = [0.0]
 var _rapid_fire_timer    : float = 0.0
@@ -284,7 +305,8 @@ signal respawned()
 func _ready() -> void:
 	_deck_open = false
 	print("=== PLAYER.GD v7 LOADED — if you don't see this, wrong file ===")
-	call_deferred("_show_class_select")
+	if not is_ai_puppet:
+		call_deferred("_show_class_select")
 	add_to_group("player")
 	add_to_group("players")
 	add_to_group("units")
@@ -303,7 +325,7 @@ func _ready() -> void:
 	# happened to init last. Local split-screen is unaffected -- SSM parents
 	# each player under its own SubViewport, where "current" is scoped
 	# per-viewport rather than a scene-tree-wide top-level camera.
-	var _cameras_active : bool = not _is_remote_puppet()
+	var _cameras_active : bool = not _is_remote_puppet() and not is_ai_puppet
 	fps_camera.current   = _cameras_active
 	fps_camera.position  = Vector3.ZERO
 	fps_camera.rotation  = Vector3.ZERO
@@ -334,7 +356,14 @@ func _ready() -> void:
 		_footstep = AudioStreamPlayer3D.new(); add_child(_footstep)
 
 	# ── Weapon binding — deferred so SSM finishes attaching scene tree ──
-	call_deferred("_bind_weapon_manager")
+	# Puppets (TeamAlly) bind their own WeaponsManager synchronously right
+	# after instancing this scene (see team_ally.gd::_build_rig) -- this
+	# deferred call would otherwise fire afterward and silently re-bind the
+	# same WeaponsManager to (self=this rig, camera=this rig's own
+	# fps_camera) instead of the ally's real (player=TeamAlly, camera=
+	# _aim_camera) binding, undoing it.
+	if not is_ai_puppet:
+		call_deferred("_bind_weapon_manager")
 
 	if is_instance_valid(animation_tree):
 		animation_tree.active = true
@@ -346,7 +375,10 @@ func _ready() -> void:
 	floor_stop_on_slope = false
 	floor_max_angle     = deg_to_rad(50.0)
 
-	get_tree().create_timer(0.2).timeout.connect(_setup_body_layers)
+	# Puppets need to stay visible (third-person ally, not first-person
+	# self-view) -- see team_ally.gd's own note on this exact timer.
+	if not is_ai_puppet:
+		get_tree().create_timer(0.2).timeout.connect(_setup_body_layers)
 	get_tree().create_timer(0.5).timeout.connect(_find_grappler)
 
 	var _aura_script := load("res://scripts/PlayerEnergyAura.gd") if ResourceLoader.exists("res://scripts/PlayerEnergyAura.gd") else null
@@ -738,6 +770,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	if device_id == -99: return   # no device assigned
 	if is_dead: return
 	if _class_selecting or _deck_open: return
+	# REAL BUG FIX: "Call of the Wild ally-pick panel has no cursor" -- this
+	# handler recaptures the mouse (hides the cursor) on ANY mouse click
+	# while in FPS mode, and it only ever knew about _class_selecting/
+	# _deck_open/shop_open. AllyChoiceUI.gd's panel isn't any of those, so
+	# it was invisible to this guard -- the player's very first click at a
+	# "Choose" card (even a near-miss that doesn't land exactly on the
+	# button) immediately re-hid the cursor via this handler, before they
+	# could ever successfully click it. Same fix shape as the other three.
+	var ally_choice := get_node_or_null("/root/AllyChoiceUI")
+	if is_instance_valid(ally_choice) and ally_choice.has_method("is_choice_open") \
+			and ally_choice.is_choice_open():
+		return
 	if device_id == -1 and event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
 		if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED \
 				and current_mode == CameraMode.FPS and not shop_open:
@@ -858,6 +902,9 @@ func _input(event: InputEvent) -> void:
 			KEY_T: _throw_grenade(false)   # frag
 			KEY_B: _throw_grenade(true)    # flame
 			KEY_P: _deploy_purifier()
+			KEY_H:
+				var _hev := event as InputEventKey
+				_try_terraform(_hev.shift_pressed)   # H = raise, Shift+H = flatten
 
 	if device_id == -1 and not shop_open and not _class_selecting and not _deck_open and event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
@@ -2082,6 +2129,42 @@ func _deploy_purifier() -> void:
 	_purifier_cd = PURIFIER_COOLDOWN
 
 
+## REAL FEATURE (2026-08-24): "infuse the terrain generation from Tribe" --
+## Tribe's FPSPlayer.gd has a real, working terraform tool that raycasts
+## to the ground and calls the terrain script's raise_area()/
+## flatten_area(). Same idea here: raycast from the camera (same pattern
+## basegun.gd's own shoot raycast uses), find the live terrain generator
+## via the "terrain_ready" group (added by terrainscript.gd::generate()
+## once real ground collision exists), and edit a disc of terrain
+## centered on the hit point.
+func _try_terraform(flatten_mode: bool) -> void:
+	if _terraform_cd > 0.0:
+		_show_message("⛰ Terraform: %.1fs" % _terraform_cd, Color(0.6, 0.5, 0.3)); return
+	if not is_instance_valid(fps_camera): return
+
+	var space := fps_camera.get_world_3d().direct_space_state
+	var from  := fps_camera.global_position
+	var dir   := -fps_camera.global_transform.basis.z
+	var query := PhysicsRayQueryParameters3D.create(from, from + dir * TERRAFORM_RANGE)
+	query.collision_mask = 3   # real ground layer -- matches terrainscript.gd's GeneratedGroundCollision
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		_show_message("No ground in range.", Color(0.6, 0.6, 0.6)); return
+
+	var terrain := get_tree().get_first_node_in_group("terrain_ready")
+	if not is_instance_valid(terrain) or not terrain.has_method("raise_area"):
+		_show_message("Terrain not ready.", Color(0.6, 0.6, 0.6)); return
+
+	var hit_pos : Vector3 = hit["position"]
+	if flatten_mode:
+		terrain.flatten_area(hit_pos.x, hit_pos.z, TERRAFORM_RADIUS, hit_pos.y)
+		_show_message("⛰ Flattened terrain.", Color(0.5, 0.7, 0.5))
+	else:
+		terrain.raise_area(hit_pos.x, hit_pos.z, TERRAFORM_RADIUS, TERRAFORM_RAISE_DELTA)
+		_show_message("⛰ Raised terrain.", Color(0.6, 0.5, 0.3))
+	_terraform_cd = TERRAFORM_COOLDOWN
+
+
 func recharge_sword(amount: float) -> void:
 	sword_charge = minf(sword_charge + amount, sword_max_charge)
 	_update_sword_hud()
@@ -2104,6 +2187,7 @@ func _tick_meta_systems(delta: float) -> void:
 	if _frag_cd      > 0.0: _frag_cd      = maxf(0.0, _frag_cd      - delta)
 	if _flame_cd     > 0.0: _flame_cd     = maxf(0.0, _flame_cd     - delta)
 	if _purifier_cd  > 0.0: _purifier_cd  = maxf(0.0, _purifier_cd  - delta)
+	if _terraform_cd > 0.0: _terraform_cd = maxf(0.0, _terraform_cd - delta)
 
 	# Synergy window
 	if _synergy_active:

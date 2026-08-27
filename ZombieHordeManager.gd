@@ -94,6 +94,14 @@ var _grid : Dictionary = {}
 var _ground_y_cache : Dictionary    = {}   # Vector2i → float
 var _ground_shape   : SphereShape3D = null # reused across all cell casts
 
+# Base/turret structure RIDs to exclude from ground-cache casts, same
+# reason and same subtree-walk as zombie.gd's own _ground_ray_exclude
+# (see _refresh_structure_ray_exclude there) -- refreshed on its own timer
+# since structures aren't rebuilt every frame.
+var _structure_exclude       : Array[RID] = []
+var _structure_exclude_timer : float      = 0.0
+const STRUCTURE_EXCLUDE_REFRESH : float = 2.0
+
 # ── PLAYER POSITIONS for grid push ───────────────────────────
 # Updated once per grid rebuild — used to push player refs into
 # each zombie's _players_cache (zero group-scan detection).
@@ -176,6 +184,16 @@ func _exit_tree() -> void:
 	Engine.unregister_singleton("ZombieHordeManager")
 
 func _ready() -> void:
+	# REAL BUG FIX: SquadCommandPanel.gd's _find_horde_manager() looks for a
+	# node in this group (or "horde_manager") to bind its whole command
+	# interface to -- but this autoload never joined either group, and
+	# never implemented get_team_id()/select_all_team()/command_attack()/etc
+	# at all. That left _horde_mgr permanently null in real play: every
+	# squad command silently reported "No zombies!" and did nothing, with
+	# zero errors anywhere (GDScript duck-calls on a null-guarded Node ref
+	# never execute, so nothing ever surfaced). See the SELECTION section
+	# below for the actual missing methods.
+	add_to_group("zombie_horde_manager")
 	var gs := get_node_or_null("/root/GameSettings")
 	var pc : int = int(gs.get("player_count") if is_instance_valid(gs) and "player_count" in gs else 1)
 	if pc > 1:
@@ -246,7 +264,22 @@ func _try_init() -> void:
 	_mm_instance.material_override = zombie_material
 
 	if not is_instance_valid(_flow_field):
-		_flow_field = get_node_or_null("/root/LaneFlowField")
+		# REAL BUG FIX (2026-08-24): the flow-field script (FlowFieldManager.gd,
+		# whose own header comment still says "AUTOLOAD as 'LaneFlowField'" from
+		# before a rename) is actually registered in project.godot's [autoload]
+		# as "FlowFieldManager", not "LaneFlowField" -- this lookup always
+		# returned null, so is_ready() was never reachable and _sample_flow()
+		# ALWAYS fell through to the straight-line-to-base fallback (or the
+		# hardcoded Vector2(1,0) default if no base found). Since Z2/Z3 crowd
+		# zombies get zero separation from each other (only Z1 does, via
+		# _push_neighbors/_push_players_to_zombies), a straight-line beeline
+		# with no spread put every dormant zombie at the exact same point --
+		# reads as "all zombies clumped in one corner" until proximity
+		# promotes them to real Z1 CharacterBody3D AI, which "suddenly" all
+		# start moving/animating at once. Confirmed via uid match: both
+		# "FlowFieldManager"'s uid in project.godot and FlowFieldManager.gd.uid
+		# are uid://c60psoywddin7 -- same file, just the wrong lookup name.
+		_flow_field = get_node_or_null("/root/FlowFieldManager")
 
 	if _pool.is_empty() and is_instance_valid(zombie_scene):
 		for _i in POOL_SIZE:
@@ -392,8 +425,22 @@ func _update_z1_lod() -> void:
 				0, 1: z.set_process(true)
 				2, 3: z.set_process(false)
 			z.visible = nlod < 3
-			if nlod == 2: z.call_deferred("_snap_to_ground")
 			if nlod < 3: _apply_lod_tint(z, nlod)
+
+		# REAL BUG FIX: "zombies pile up far away in sky, then logic
+		# switches on when I walk close" -- this used to only call
+		# _snap_to_ground() once, exactly on the transition INTO lod2.
+		# LOD2's "cheap march" (see set_lod() in zombie.gd) moves the
+		# zombie horizontally every physics tick with no ground correction
+		# of its own, so on this valley terrain's slopes/ridges a zombie
+		# that stays at lod2 for a while (this function only runs every 15
+		# frames, so it can linger) drifts steadily more airborne or
+		# underground the longer/farther it marches -- only visibly
+		# correcting once the player closes in and promotes it to full
+		# physics. Re-snap every pass while still at lod2, not just once
+		# on entry.
+		if nlod == 2 and z.has_method("_snap_to_ground"):
+			z.call_deferred("_snap_to_ground")
 
 		if z.has_method("set_mesh_near"):
 			z.set_mesh_near(d2 < MESH_LOD_DIST_SQ)
@@ -463,6 +510,32 @@ func _rebuild_grid() -> void:
 
 # One downward shape cast per occupied grid cell replaces up to ZONE1_MAX
 # per-zombie per-physics-frame raycasts with a handful of 4 Hz queries.
+## REAL BUG FIX: "zombies sink underground once they get to my base".
+## basenode.gd's procedural castle walls/ramparts/towers share terrain's
+## collision layer (same issue forestspawner.gd's ground rays already had
+## to work around) -- a grid cell's shape cast landing on a rampart-walk
+## or wall top near the base registers THAT height as ground. zombie.gd's
+## own accurate fallback ray already excludes every base/turret collision
+## subtree (_refresh_structure_ray_exclude), but this shared cache never
+## did, so any zombie whose position is still within CACHE_TRUST_MARGIN of
+## that wrong cached height (very likely right next to the base) trusts it
+## and never falls through to the accurate per-zombie ray that would have
+## caught the mistake -- it just sits at the wrong (often lower) height.
+func _refresh_structure_exclude(delta: float) -> void:
+	_structure_exclude_timer -= delta
+	if _structure_exclude_timer > 0.0: return
+	_structure_exclude_timer = STRUCTURE_EXCLUDE_REFRESH
+	_structure_exclude.clear()
+	for group in ["bases", "turrets"]:
+		for node in get_tree().get_nodes_in_group(group):
+			if not is_instance_valid(node): continue
+			if node is CollisionObject3D:
+				_structure_exclude.append((node as CollisionObject3D).get_rid())
+			for child in node.find_children("*", "CollisionObject3D", true, false):
+				var co := child as CollisionObject3D
+				if is_instance_valid(co): _structure_exclude.append(co.get_rid())
+
+
 func _rebuild_ground_cache() -> void:
 	_ground_y_cache.clear()
 	if not is_instance_valid(_ground_shape) or _grid.is_empty(): return
@@ -471,8 +544,11 @@ func _rebuild_ground_cache() -> void:
 	var space : PhysicsDirectSpaceState3D = world.direct_space_state
 	if not is_instance_valid(space): return
 
-	# Exclude all active Z1 zombie bodies so the cast finds terrain, not zombies.
-	var excl : Array[RID] = []
+	_refresh_structure_exclude(1.0 / 4.0)  # this rebuild already runs at ~4 Hz
+
+	# Exclude all active Z1 zombie bodies AND base/turret structures so the
+	# cast finds real terrain, not zombies or castle geometry.
+	var excl : Array[RID] = _structure_exclude.duplicate()
 	for z in _z1_active:
 		if is_instance_valid(z): excl.append(z.get_rid())
 
@@ -686,6 +762,32 @@ func _check_promotions() -> void:
 			_demote_z2_to_z3(i)
 		i -= 1
 
+	# Z1 -> Z2 (REAL BUG FIX, 2026-08-24 -- see _demote_z1_to_z2()'s own
+	# comment): symmetric with the Z2->Z1 promotion above, using the SAME
+	# nearest-player distance metric (not camera distance, which
+	# _update_z1_lod() uses for a different purpose) so a zombie can't be
+	# "in range" by one measure and "out of range" by the other. A wider
+	# exit threshold than the promotion's entry threshold (hysteresis, same
+	# pattern as zombie.gd's own BLOCKER_RANGE/BLOCKER_RANGE_EXIT) avoids a
+	# zombie flickering between tiers right at the boundary.
+	const Z1_DEMOTE_MULT : float = 1.4
+	var z1_demote_r2 := (ZONE1_RADIUS * Z1_DEMOTE_MULT) * (ZONE1_RADIUS * Z1_DEMOTE_MULT)
+	var zi := _z1_active.size() - 1
+	while zi >= 0:
+		var z := _z1_active[zi]
+		if not is_instance_valid(z):
+			zi -= 1
+			continue
+		var owned : bool = "_horde_mgr" in z and z.get("_horde_mgr") == self
+		if owned:
+			var best_d2 := INF
+			for pp in _player_positions:
+				var d2 : float = z.global_position.distance_squared_to(pp)
+				if d2 < best_d2: best_d2 = d2
+			if best_d2 >= z1_demote_r2:
+				_demote_z1_to_z2(z)
+		zi -= 1
+
 
 # ── Promote a pool zombie to Z1 ──────────────────────────────
 func _promote_to_z1(pos: Vector3, team_id: int) -> CharacterBody3D:
@@ -798,6 +900,29 @@ func _promote_z2_to_z1(idx: int) -> void:
 func _demote_z2_to_z3(idx: int) -> void:
 	var pos := _z2_pos[idx]; var team := _z2_team[idx]; var lane := _z2_lane[idx]
 	_swap_remove_z2(idx); _add_to_z3(pos, team, lane)
+
+## REAL BUG FIX (2026-08-24): there was NO Z1->Z2 demotion path at all --
+## _promote_z3_to_z2/_promote_z2_to_z1/_demote_z2_to_z3 exist, but a
+## Z1-active zombie (real CharacterBody3D, full physics/AI cost) only ever
+## left _z1_active by dying. Once the player moved away (or a zombie got
+## left behind), it kept running its full LOD tier's simulation cost
+## forever -- the exact leak the whole LOD system exists to prevent, and
+## it could keep occupying one of only ZONE1_MAX(60) scarce real-zombie
+## slots indefinitely. Only demotes POOL-OWNED zombies (real `_horde_mgr`
+## marker, see zombie.gd) -- externally-registered ones (HiveCluster patrol
+## guards, Egg hatch waves via register_z1()) own their own lifecycle and
+## must never be handed back into the shared _pool.
+func _demote_z1_to_z2(z: CharacterBody3D) -> void:
+	if not is_instance_valid(z): return
+	var pos  : Vector3 = z.global_position
+	var team : int = int(z.get("team_id")) if "team_id" in z else 2
+	var vel_xz := Vector2.ZERO
+	if "velocity" in z:
+		var v3 : Vector3 = z.get("velocity")
+		vel_xz = Vector2(v3.x, v3.z)
+	_return_to_pool(z)
+	_add_to_z2(pos, team, 0)
+	_z2_vel[_z2_count - 1] = vel_xz   # preserve momentum instead of snapping to zero
 
 func _swap_remove_z2(idx: int) -> void:
 	_z2_count -= 1
@@ -983,3 +1108,129 @@ func get_selected() -> Array:
 	return _selected
 
 func clear_selection() -> void: _selected.clear()
+
+
+# ── SQUAD COMMAND API (real fix, 2026-08-24) ────────────────────────────
+# The methods below are what SquadCommandPanel.gd has always called on
+# "_horde_mgr" (select_all_team/select_box/select_in_radius/select_owned_by/
+# deselect_all/command_attack/command_defend/command_stay/command_follow/
+# command_patrol/get_team_id) -- NONE of them existed anywhere in this
+# codebase until now, and this autoload never joined the group
+# SquadCommandPanel searches for a manager in. The panel's UI, keybinds,
+# and box-select always rendered/ran; the underlying command layer was
+# completely dead.
+#
+# NOTE on scope: this deliberately does NOT use _z1_active/_z2/_z3 (this
+# class's own enemy-horde LOD pool -- confirmed via register_z1's only real
+# callers, Egg.gd/HiveCluster.gd, that player-owned deck creeps are never
+# registered into it at all). Squad-selectable units are found by a live
+# group scan instead, same technique zombie.gd/team_ally.gd already use for
+# their own targeting -- correct for a small commandable roster, wrong (too
+# slow) for the enemy horde's hundreds of units, which is exactly why that
+# pool exists separately and this code doesn't touch it.
+
+## The commandable roster for a team: deck creeps/hive zombies/rat+bat
+## pets (all in group "units") PLUS team_ally.gd's Builder/Guard/Scout
+## allies (group "team_allies" -- NOT in "units", see that script's own
+## _ready()). Deduplicated in case a future unit type ever joins both.
+func _commandable_by_team(team_id: int) -> Array:
+	var result : Array = []
+	var seen   : Dictionary = {}
+	for group in ["units", "team_allies"]:
+		for u in get_tree().get_nodes_in_group(group):
+			if not is_instance_valid(u) or not (u is Node3D): continue
+			if seen.has(u): continue
+			if not ("team_id" in u) or int(u.get("team_id")) != team_id: continue
+			if "is_dead" in u and bool(u.get("is_dead")): continue
+			seen[u] = true
+			result.append(u)
+	return result
+
+## This is a single GLOBAL manager, not one instance per team -- there is
+## no real "this manager's team". SquadCommandPanel's own _find_horde_manager()
+## was written assuming per-team manager instances that were never built;
+## returning a sentinel that can never equal a real team_id makes that
+## strict-equality check meaningless rather than wrong, and
+## _find_horde_manager() itself is updated to not depend on the match
+## (see SquadCommandPanel.gd).
+func get_team_id() -> int:
+	return -999999
+
+func select_all_team(team_id: int) -> void:
+	select(_commandable_by_team(team_id))
+	selection_changed.emit(get_selected())
+
+## No per-player ownership tracking exists on deck creeps/allies (a team-
+## shared economy, not per-player units) -- falls back to the requesting
+## player's whole team. Kept as its own method because SquadCommandPanel
+## calls it as a specific fallback path.
+func select_owned_by(player_iid: int) -> void:
+	var p := instance_from_id(player_iid)
+	var tid : int = int(p.get("team_id")) if is_instance_valid(p) and "team_id" in p else 1
+	select_all_team(tid)
+
+func deselect_all() -> void:
+	clear_selection()
+	selection_changed.emit(get_selected())
+
+func select_in_radius(pos: Vector3, radius: float, team_id: int) -> void:
+	var result : Array = []
+	var r2 := maxf(radius * radius, 0.0001)
+	for u in _commandable_by_team(team_id):
+		if (u as Node3D).global_position.distance_squared_to(pos) <= r2:
+			result.append(u)
+	select(result)
+	selection_changed.emit(get_selected())
+
+func select_box(cam: Camera3D, min_uv: Vector2, max_uv: Vector2, team_id: int) -> void:
+	if not is_instance_valid(cam): return
+	var vp := cam.get_viewport()
+	if not is_instance_valid(vp): return
+	var vp_size := vp.get_visible_rect().size
+	var result : Array = []
+	for u in _commandable_by_team(team_id):
+		var pos3 : Vector3 = (u as Node3D).global_position
+		if cam.is_position_behind(pos3): continue
+		var uv := cam.unproject_position(pos3) / vp_size
+		if uv.x >= min_uv.x and uv.x <= max_uv.x and uv.y >= min_uv.y and uv.y <= max_uv.y:
+			result.append(u)
+	select(result)
+	selection_changed.emit(get_selected())
+
+## Real per-unit dispatch, duck-typed the same defensive way
+## SquadCommandPanel.gd's own _persist_selected_zombies() already dispatches
+## -- kept here too (not just there) so THIS API is genuinely functional on
+## its own, not merely safe-to-call. Any unit type wired into the
+## "units"/"team_allies" groups just needs to implement the matching
+## command_*/set_patrol_points method to be squad-commandable; none of this
+## cares which script the unit is.
+func command_attack(pos: Vector3) -> void:
+	for u in get_selected():
+		if not is_instance_valid(u): continue
+		if u.has_method("command_attack_position"): u.command_attack_position(pos, true)
+		elif u.has_method("command_attack_move"): u.command_attack_move(pos, true)
+
+## `pos` is accepted only to match SquadCommandPanel's existing call
+## signature -- every real command_defend() implementation (zombie.gd,
+## team_ally.gd) already knows to rally at its own friendly_base/spawn
+## point, so there's no second "defend position" concept to thread through.
+func command_defend(_pos: Vector3) -> void:
+	for u in get_selected():
+		if is_instance_valid(u) and u.has_method("command_defend"):
+			u.command_defend(true)
+
+func command_stay() -> void:
+	for u in get_selected():
+		if is_instance_valid(u) and u.has_method("command_hold"):
+			u.command_hold(true)
+
+func command_follow(target: Node3D) -> void:
+	for u in get_selected():
+		if is_instance_valid(u) and u.has_method("command_follow"):
+			u.command_follow(target, true)
+
+func command_patrol(waypoints: Array) -> void:
+	for u in get_selected():
+		if not is_instance_valid(u): continue
+		if u.has_method("set_patrol_points"): u.set_patrol_points(waypoints)
+		if u.has_method("command_patrol"): u.command_patrol(true)

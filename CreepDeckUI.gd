@@ -160,10 +160,17 @@ func show_for_player(pid: int, _viewport = null) -> void:
 func _load_creeps(pid: int) -> void:
 	var dm := _get_dm()
 	if is_instance_valid(dm):
-		if dm.has_method("get_all_creeps"):
-			_all_creeps = dm.get_all_creeps()
-		elif dm.has_method("get_unlocked_creeps"):
+		# REAL BUG FIX: get_all_creeps() was checked first, so this screen
+		# always offered every real creep type regardless of whether the
+		# player had actually unlocked it -- defeating the whole point of
+		# the progressive gold-unlock economy (shopui.gd's "Unlock New
+		# Creep" row). This is a "confirm your current deck" screen, not a
+		# way to bypass paying for new types, so it should only ever offer
+		# what's already unlocked.
+		if dm.has_method("get_unlocked_creeps"):
 			_all_creeps = dm.get_unlocked_creeps(pid)
+		elif dm.has_method("get_all_creeps"):
+			_all_creeps = dm.get_all_creeps()
 		# DM present but returned empty → genuine "no unlocked creeps" state; propagate it
 	else:
 		_all_creeps = CREEP_CATALOGUE.duplicate()

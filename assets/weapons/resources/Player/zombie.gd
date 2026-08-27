@@ -286,6 +286,18 @@ var target_type : String = ""
 var enemy_base : Node3D = null
 var friendly_base : Node3D = null
 
+# REAL BUG FIX (2026-08-24): ZombieHordeManager._promote_to_z1() has always
+# had `if "_horde_mgr" in z: z.set("_horde_mgr", self)`, but this var was
+# never actually declared anywhere on this script -- the "in" check always
+# evaluated false, so this line was a total no-op for every pool-recycled
+# zombie. Needed as a real ownership marker: a Z1-active zombie can be
+# either pool-recycled (_promote_to_z1, owned by the pool, safe to demote
+# back to it) or externally registered (register_z1(), HiveCluster patrol
+# guards/Egg hatch waves, owns its OWN lifecycle) -- demoting an externally-
+# registered zombie back into the shared _pool would let a later
+# _promote_to_z1() hand out a zombie its real owner still thinks is theirs.
+var _horde_mgr : Node = null
+
 # ============================================================
 # AI
 # ============================================================
@@ -316,6 +328,9 @@ var current_waypoint : int = 0
 
 var attack_timer       : float = 0.0
 var _attack_anim_timer : float = 0.0
+## Real length of this creep's attack animation clip, derived in _ready() --
+## see _try_attack()'s comment. 0.7 is only a fallback if no clip is found.
+var _attack_anim_len   : float = 0.7
 var _warned_no_attack_anim : bool = false
 var _nav_agent         : NavigationAgent3D = null   # no longer created (see _ready()); left null-safe for any stray reads
 var _nav_update_timer  : float = 0.0
@@ -327,12 +342,25 @@ var _ground_ray_exclude : Array[RID] = []   # self + ragdoll bone RIDs, see _rea
 var _structure_ray_exclude_timer : float = 0.0
 const STRUCTURE_RAY_REFRESH : float = 2.0   # castle/base doesn't move; turrets get built/destroyed over a match, so refresh occasionally rather than every frame
 
+# ── DARK-HORROR RESKIN (see theme_horror/HorrorTheme.gd) ──
+# Sickly-green tint on hostile-horde (team_id==2) zombies only -- player-
+# owned deck creeps (Zombie/Tank/Shaman/Berserker/Leaper, team_id==1,
+# same shared script) are left at their normal skin color. Toggle off
+# here if it doesn't read well in an actual playtest -- nothing else
+# depends on this flag.
+const HorrorTheme = preload("res://theme_horror/HorrorTheme.gd")
+const ENABLE_HORROR_TINT : bool = true
+
 # ── SPIKELING MOVEMENT BRAIN (2026-07-20) ──
 const SpikelingScript = preload("res://spikeling.gd")
 const AGGRO_BURST_MULT := 1.30
 const CAUTION_DAMP_MULT := 0.80
 const BRAIN_EFFECT_DURATION := 1.0
 const CLOSING_STIMULUS_SCALE := 40.0
+# player-team-only additions (team_id==1) -- see brain-load comment in _ready()
+const ALLY_ALERT_RADIUS              : float = 12.0
+const ALLY_ALERT_STIMULUS_PER_THREAT : float = 30.0
+const ALLY_DAMAGE_CAUTION_STIMULUS   : float = 60.0
 var brain: Spikeling
 var _prev_target_dist: float = -1.0
 var _aggro_timer: float = 0.0
@@ -343,10 +371,10 @@ var _smooth_speed_mult: float = 1.0
 # STUCK
 # ============================================================
 
-var stuck_timer : float = 0.0
-
-var last_position : Vector3 = Vector3.ZERO
-var last_position_timer : float = 0.0
+## Shared stuck-detection + nav-checked recovery -- see MovementRecovery.gd.
+## Owns its own last_position/timers internally now (previously loose vars
+## on this script, duplicated near-verbatim in team_ally.gd's own copy).
+var _recovery : MovementRecovery = MovementRecovery.new()
 
 # ============================================================
 # NEIGHBORS
@@ -466,12 +494,6 @@ var swarm_pheromone_timer : float = 0.0
 var swarm_pheromone_active : bool = false
 
 # ============================================================
-# AAA: THREAT SCORE CACHE
-# ============================================================
-
-var threat_scores : Dictionary = {}
-
-# ============================================================
 # AAA: NETWORK SYNC
 # ============================================================
 
@@ -490,6 +512,16 @@ var life_steal_pct : float = 0.0
 
 var enrage_damage_mult : float = 1.0
 var enrage_speed_mult : float = 1.0
+
+# AIDirector.gd broadcasts fleet-wide strategic multipliers here -- kept
+# SEPARATE from enrage_speed_mult/enrage_damage_mult on purpose. Those are
+# already written by this zombie's own individual low-HP/elite enrage
+# trigger (search "enrage_damage_mult =" elsewhere in this file); if the
+# director overwrote the same fields, a fleet-wide directive would erase
+# an individual zombie's own enrage state, and vice versa. Multiplied
+# together wherever speed/damage is actually computed instead.
+var director_speed_mult  : float = 1.0
+var director_damage_mult : float = 1.0
 
 # ============================================================
 # AAA: DEBUG OVERLAY
@@ -621,9 +653,22 @@ func _ready() -> void:
 	# organic speed instead of a flat constant. NavigationAgent3D itself is
 	# no longer created at all.
 	brain = SpikelingScript.new()
+	# REAL FEATURE: player-owned units (deck-purchased Tank/Shaman/Berserker/
+	# Leaper/Zombie -- all real subclasses of this same base script, see
+	# tank.gd/shaman.gd/berserk.gd/leaper.gd's super._ready()/
+	# super._physics_process() calls) get a 3rd Alert neuron wired into
+	# Aggro via a real synapse, matching team_ally.gd's own brain design
+	# ("extend the Spikeling brain to the deck creeps too"). Loaded for
+	# EVERY unit regardless of team so there's one shared brain definition
+	# to maintain, but Alert is only ever stimulated for team_id==1 (see
+	# _brain_tick below) -- an unstimulated neuron never fires, so this is
+	# a complete no-op for enemy zombies: their Aggro/Caution behavior is
+	# byte-for-byte what it was before this change.
 	brain.load_from_text(
 		"neuron Aggro threshold=100 leak=8\n" +
 		"neuron Caution threshold=100 leak=15\n" +
+		"neuron Alert threshold=80 leak=10\n" +
+		"synapse Alert -> Aggro weight=40\n" +
 		"refractory=45\n")
 
 	add_to_group("units")
@@ -638,7 +683,7 @@ func _ready() -> void:
 	if is_elite:
 		add_to_group("elite_units")
 
-	last_position = global_position
+	_recovery.reset_progress(global_position)
 
 	_setup_audio()
 
@@ -652,23 +697,43 @@ func _ready() -> void:
 		var found := find_children("*", "Skeleton3D", true, false)
 		if not found.is_empty(): _skeleton = found[0] as Skeleton3D
 	if is_instance_valid(_skeleton):
-		# REAL BUG FIX (2026-07-25): confirmed by reading the actual animation
-		# resources (attack.res/idle.res/run.res) that this skeleton's real
-		# bone names are "mixamorig5_*" (a re-import picked up a numbered
-		# prefix), not "mixamorig_*" -- this search always failed and silently
-		# fell back to bone 0, which happened to work by luck of bone
-		# ordering (Hips is conventionally bone 0 in Mixamo rigs) but wasn't
-		# actually verified by name. Same mismatch existed in
-		# LIMB_BONE_CHAINS/LIMB_HITBOX_BONE below (search for "mixamorig5_"
-		# there too), which made _build_limb_hitboxes() below skip every
-		# limb (find_bone always -1) -- the dismemberment system was fully
-		# inert this whole time.
-		_hips_bone_idx = _skeleton.find_bone("mixamorig5_Hips")
+		# CORRECTED (2026-08-24): the 2026-07-25 comment here had it backwards.
+		# Read directly from zombie.tscn: the SKELETON's own bones (bones/0/
+		# name etc.) are "mixamorig_*", with NO "5" -- confirmed against the
+		# actual .tscn data, not inferred. The "mixamorig5_" prefix is real,
+		# but it belongs to attack.res/idle.res/run.res's ANIMATION TRACK
+		# paths, not the skeleton's bone names -- a genuine mismatch between
+		# the skeleton and the animations built for it (probably a
+		# re-export that renamed one but not the other). That mismatch is
+		# WHY attack.res's Hips (and all 51 other) tracks silently fail to
+		# apply to any bone: Godot can't resolve "mixamorig5_Hips" against a
+		# skeleton that only has "mixamorig_Hips". This lookup previously
+		# searched for the wrong (animation-track) name, always missed, and
+		# only "worked" via the bone-0 fallback below -- by luck of Hips
+		# conventionally being bone 0, never actually verified by name.
+		# Same corrected mismatch in LIMB_BONE_CHAINS/LIMB_HITBOX_BONE below.
+		_hips_bone_idx = _skeleton.find_bone("mixamorig_Hips")
 		if _hips_bone_idx < 0: _hips_bone_idx = 0   # fallback to bone 0
 		for child in _skeleton.get_children():
 			if child is MeshInstance3D:
 				_body_meshes.append(child as MeshInstance3D)
 		_build_limb_hitboxes()
+		if ENABLE_HORROR_TINT and team_id == 2 and not _body_meshes.is_empty():
+			HorrorTheme.apply_sickly_tint(_body_meshes, HorrorTheme.SICKLY_GREEN, 0.55)
+
+	# REAL BUG FIX (2026-08-24 rebuild): derive the attack gravity-suppression
+	# window from the REAL attack clip length instead of a hardcoded guess --
+	# see _try_attack()'s use of _attack_anim_len for the full story. Reads
+	# whichever attack animation this creep variant actually has (subclasses
+	# like tank.gd set their own attack_cooldown before calling super._ready(),
+	# so the clampf below already reads the correct per-variant value).
+	var _ap_for_len := get_node_or_null("AnimationPlayer") as AnimationPlayer
+	if is_instance_valid(_ap_for_len):
+		for _anim_name in ["animations/attack", "animations/Attack", "attack", "Attack"]:
+			if _ap_for_len.has_animation(_anim_name):
+				_attack_anim_len = _ap_for_len.get_animation(_anim_name).length
+				break
+	_attack_anim_len = clampf(_attack_anim_len, 0.3, attack_cooldown)
 
 	# REAL BUG FIX (2026-07-19): _snap_to_ground()'s ground raycast only
 	# excluded this body's own RID (get_rid()) -- but the 28 PhysicalBone3D
@@ -742,24 +807,32 @@ func _ready() -> void:
 #      via direct testing to simulate ONLY the given bones, leaving the
 #      rest of the skeleton under normal AnimationTree control. This lets
 #      one limb ragdoll-detach while the zombie keeps walking/attacking.
+# REAL BUG FIX (2026-08-24): "zombie hitbox not aligned" -- confirmed by
+# directly reading zombie.tscn's own Skeleton3D bone list (bones/0/name
+# etc.) that the REAL bone names are "mixamorig_*", with no "5". The
+# "mixamorig5_" prefix used below was never real for THIS skeleton -- every
+# find_bone() call using it returned -1 with no fallback (unlike
+# _hips_bone_idx above, which happens to survive via its bone-0 fallback),
+# so _build_limb_hitboxes() has been silently building NOTHING this whole
+# time. Corrected to match the skeleton's actual bone names.
 const LIMB_BONE_CHAINS : Dictionary = {
-	"head":      ["mixamorig5_Head"],
-	"left_arm":  ["mixamorig5_LeftShoulder", "mixamorig5_LeftArm", "mixamorig5_LeftForeArm",
-				  "mixamorig5_LeftHand", "mixamorig5_LeftHandIndex1", "mixamorig5_LeftHandIndex2",
-				  "mixamorig5_LeftHandIndex3"],
-	"right_arm": ["mixamorig5_RightShoulder", "mixamorig5_RightArm", "mixamorig5_RightForeArm",
-				  "mixamorig5_RightHand", "mixamorig5_RightHandIndex1", "mixamorig5_RightHandIndex2",
-				  "mixamorig5_RightHandIndex3"],
-	"left_leg":  ["mixamorig5_LeftUpLeg", "mixamorig5_LeftLeg", "mixamorig5_LeftFoot", "mixamorig5_LeftToeBase"],
-	"right_leg": ["mixamorig5_RightUpLeg", "mixamorig5_RightLeg", "mixamorig5_RightFoot", "mixamorig5_RightToeBase"],
+	"head":      ["mixamorig_Head"],
+	"left_arm":  ["mixamorig_LeftShoulder", "mixamorig_LeftArm", "mixamorig_LeftForeArm",
+				  "mixamorig_LeftHand", "mixamorig_LeftHandIndex1", "mixamorig_LeftHandIndex2",
+				  "mixamorig_LeftHandIndex3"],
+	"right_arm": ["mixamorig_RightShoulder", "mixamorig_RightArm", "mixamorig_RightForeArm",
+				  "mixamorig_RightHand", "mixamorig_RightHandIndex1", "mixamorig_RightHandIndex2",
+				  "mixamorig_RightHandIndex3"],
+	"left_leg":  ["mixamorig_LeftUpLeg", "mixamorig_LeftLeg", "mixamorig_LeftFoot", "mixamorig_LeftToeBase"],
+	"right_leg": ["mixamorig_RightUpLeg", "mixamorig_RightLeg", "mixamorig_RightFoot", "mixamorig_RightToeBase"],
 }
 # Representative bone each limb's hitbox attaches to (roughly mid-limb).
 const LIMB_HITBOX_BONE : Dictionary = {
-	"head":      "mixamorig5_Head",
-	"left_arm":  "mixamorig5_LeftForeArm",
-	"right_arm": "mixamorig5_RightForeArm",
-	"left_leg":  "mixamorig5_LeftLeg",
-	"right_leg": "mixamorig5_RightLeg",
+	"head":      "mixamorig_Head",
+	"left_arm":  "mixamorig_LeftForeArm",
+	"right_arm": "mixamorig_RightForeArm",
+	"left_leg":  "mixamorig_LeftLeg",
+	"right_leg": "mixamorig_RightLeg",
 }
 const LIMB_HITBOX_RADIUS : Dictionary = {
 	"head": 0.14, "left_arm": 0.10, "right_arm": 0.10, "left_leg": 0.13, "right_leg": 0.13,
@@ -832,12 +905,14 @@ func detach_limb(limb_id: String, hit_dir: Vector3 = Vector3.FORWARD) -> void:
 	for pb in _skeleton.find_children("*", "PhysicalBone3D", true, false):
 		var pbone := pb as PhysicalBone3D
 		if not is_instance_valid(pbone): continue
-		# REAL BUG FIX (2026-07-25): root_bone_name is now "mixamorig5_X" (see
-		# LIMB_BONE_CHAINS above), but the ragdoll's PhysicalBone3D nodes in
-		# zombie.tscn were auto-generated before that re-import and are still
-		# named "Physical Bone mixamorig_X" (no "5") -- trim the CURRENT
-		# prefix so the suffix (e.g. "Head") still substring-matches them.
-		if pbone.name.findn(root_bone_name.trim_prefix("mixamorig5_")) >= 0:
+		# root_bone_name is "mixamorig_X" (see the 2026-08-24 correction on
+		# LIMB_BONE_CHAINS above -- confirmed against zombie.tscn's own
+		# Skeleton3D bone list, not the stale "mixamorig5_" assumption this
+		# comment used to describe). The ragdoll's auto-generated
+		# PhysicalBone3D nodes are named "Physical Bone mixamorig_X", so
+		# root_bone_name substring-matches them directly with no prefix
+		# trimming needed.
+		if pbone.name.findn(root_bone_name) >= 0:
 			var impulse : Vector3 = hit_dir.normalized() * randf_range(3.5, 5.5) + Vector3.UP * 2.0
 			pbone.apply_central_impulse(impulse)
 			break
@@ -899,6 +974,26 @@ func _find_anim_tree() -> AnimationTree:
 # ============================================================
 
 func _find_bases() -> void:
+
+	# REAL BUG FIX (2026-08-24): "zombies run to the corner of the map when
+	# they spawn, not at base/player". Egg.gd's _spawn_wave() explicitly
+	# sets enemy_base = attack_target (HiveNestManager's chosen focus,
+	# assigned BEFORE add_child()) with its own comment stating
+	# "_find_bases() early-returns without clearing them" -- but this
+	# function had NO such guard; it unconditionally nulled and re-derived
+	# both bases from a raw "bases" group scan the instant _ready() ran
+	# (right after add_child()), silently discarding whatever Egg.gd had
+	# just set. If the "bases" group ever has more than the one real
+	# enemy-team base in it (or iterates in an order where the intended
+	# target isn't last), a hive-spawned zombie's real march target was
+	# whatever this scan happened to land on instead -- not necessarily
+	# the actual base the player defends. Honor the pre-set values now,
+	# matching the contract Egg.gd's own comment already assumed existed.
+	# convert_team() (below) explicitly nulls both first when it needs a
+	# real re-derivation after flipping team_id, so this doesn't block
+	# that legitimate case.
+	if is_instance_valid(enemy_base) and is_instance_valid(friendly_base):
+		return
 
 	enemy_base = null
 	friendly_base = null
@@ -1006,6 +1101,28 @@ func _physics_process(delta: float) -> void:
 	if is_dead:
 		return
 
+	# Player-replication pattern applied to zombies: this node replicates
+	# via MultiplayerSpawner (through PurchaseRelay for hive-spawned units,
+	# or add_spawnable_scene for lane-pushed ones) and zombie.tscn now has
+	# a MultiplayerSynchronizer (position/rotation/velocity/health/is_dead)
+	# -- but nothing ever reassigns a zombie's authority away from the
+	# default (1/server), unlike Player.tscn, so no bootstrap RPC is
+	# needed here the way player.gd required. A non-authoritative peer
+	# skips AI/movement entirely and relies purely on the synced state;
+	# still runs the visual-only refresh so animation/health bar reflect
+	# what just arrived instead of freezing on a client's screen. Note:
+	# zombie.gd already has a hand-built, richer snapshot system
+	# (get_sync_snapshot/apply_sync_snapshot/sync_snapshot_ready,
+	# gated by network_sync_enabled, currently always false) that was
+	# never wired to actual networking -- left as a documented
+	# opportunity for a future pass rather than adopted here, since the
+	# MultiplayerSynchronizer approach is the one already proven working
+	# for Player.tscn tonight.
+	if NetworkManager.is_networked and not is_multiplayer_authority():
+		_update_animation()
+		_update_health_bar()
+		return
+
 	_update_timers(delta)
 	_refresh_structure_ray_exclude(delta)
 
@@ -1098,6 +1215,18 @@ func _physics_process(delta: float) -> void:
 		_snap_to_ground()
 
 	_update_animation()
+
+	# REAL BUG FIX (2026-08-24): "zombies still sink when they attack".
+	# _correct_root_bone_y() (added 2026-07-25 for this exact symptom --
+	# see its own header comment: "the Mixamo Hips bone Y gets animated by
+	# the attack lunge, visually sinking the mesh") was fully implemented
+	# but had ZERO call sites anywhere in this file -- the fix was written
+	# and never actually wired into the per-frame loop, so it never once
+	# ran. Must fire AFTER _update_animation() applies this frame's pose
+	# (otherwise there's nothing yet to correct) and every tick, not just
+	# during an attack, since the Hips track can carry a nonzero Y offset
+	# across the anim blend even outside the lunge window.
+	_correct_root_bone_y()
 
 	_update_stuck(delta)
 
@@ -1339,6 +1468,23 @@ func _brain_tick(delta: float) -> void:
 		elif closing_rate < 0.0:
 			brain.stimulate("Caution", -closing_rate * CLOSING_STIMULUS_SCALE)
 	_prev_target_dist = dist
+
+	# REAL FEATURE: player-team units only (deck-purchased creeps) -- Alert
+	# from ambient enemy-unit COUNT nearby, not just the current target, so
+	# a defend creep gets keyed-up from being surrounded before it's even
+	# picked a target. Gated on team_id so enemy zombies (team 2) never
+	# stimulate this neuron at all -- see the brain-load comment above.
+	if team_id == 1:
+		var nearby_threats : int = 0
+		for u in get_tree().get_nodes_in_group("units"):
+			if not is_instance_valid(u) or u == self or not (u is Node3D): continue
+			if "team_id" in u and int(u.get("team_id")) == team_id: continue
+			if "is_dead" in u and u.get("is_dead"): continue
+			if global_position.distance_to((u as Node3D).global_position) <= ALLY_ALERT_RADIUS:
+				nearby_threats += 1
+		if nearby_threats > 0:
+			brain.stimulate("Alert", nearby_threats * ALLY_ALERT_STIMULUS_PER_THREAT)
+
 	var fired: Array = brain.step()
 	if "Aggro" in fired:
 		_aggro_timer = BRAIN_EFFECT_DURATION
@@ -1350,6 +1496,11 @@ func _update_timers(delta: float) -> void:
 
 	attack_timer       = maxf(0.0, attack_timer       - delta)
 	_attack_anim_timer = maxf(0.0, _attack_anim_timer - delta)
+
+	if _forced_target_timer > 0.0:
+		_forced_target_timer = maxf(0.0, _forced_target_timer - delta)
+		if _forced_target_timer <= 0.0 or not is_instance_valid(_forced_target):
+			_forced_target = null
 
 	retarget_timer -= delta
 
@@ -1384,8 +1535,29 @@ func _apply_gravity(delta: float) -> void:
 		velocity.y -= gravity * delta
 	elif velocity.y < 0.0:
 		velocity.y = 0.0
-	# During attack prevent downward velocity
-	if attack_timer > 0.0:
+	# REAL BUG FIX (2026-08-24): "zombies sink underground after attack
+	# animation" -- this used to gate on `attack_timer` (the full attack_cooldown,
+	# 2.6s), not `_attack_anim_timer` (the actual swing-animation window, 0.7s --
+	# see _try_attack()). attack_timer stays > 0 for nearly the WHOLE cooldown in
+	# sustained melee combat, so gravity's downward accumulation (line above) was
+	# being erased back to >=0 on almost every physics frame a zombie was in
+	# combat, not just during the 0.7s swing. Confirmed via a real headless
+	# behavioral test (temporary _smoke_sink_test.gd): forced repeated attacks on
+	# a stationary target on real ground -- the instant the zombie picked up ANY
+	# upward/edge-triggered Y velocity while attack_timer was still counting down
+	# (e.g. a slope/ledge transition, a knockback, an elite Leap impulse),
+	# is_on_floor() went false and Y got PERMANENTLY stuck at that wrong height
+	# for the rest of the cooldown -- gravity could never pull it back down,
+	# because this clamp re-floored velocity.y to >=0 every single frame
+	# regardless of how far off real ground the body actually was. Same
+	# mechanism explains an under-ground stall too: whichever direction the body
+	# was perturbed the instant attack_timer was nonzero, it could never
+	# recover via gravity until the full ~2.6s cooldown ran out. Using the much
+	# narrower _attack_anim_timer (0.7s, matches the real swing duration this
+	# was clearly meant to protect) keeps the original intent -- no visible
+	# falling motion mid-swing -- without leaving gravity disabled for the
+	# ~1.9s dead window after every hit.
+	if _attack_anim_timer > 0.0:
 		velocity.y = maxf(velocity.y, 0.0)
 
 # ============================================================
@@ -1484,216 +1656,69 @@ func _tick_cheap(delta: float) -> void:
 		_try_attack(enemy_base)
 
 # ============================================================
-# TARGETING
+# TARGETING (2026-08-24 rebuild: unified into TargetPriority.gd -- see
+# _select_target() below, called by both the default lane-march path and
+# every squad-order AI mode. Replaces this function and _find_blocker(),
+# which independently duplicated the same priority logic with different,
+# inconsistently-tuned range/scoring rules.)
 # ============================================================
 
-func _find_best_target() -> void:
+## REAL BUG FIX (2026-08-24): tank.gd's Taunt ability sets an enemy's target
+## to the tank via the raw `u.set("target", self)` fallback (no
+## "set_forced_target" method existed anywhere on this script, so
+## has_method() always skipped the intended API and fell through) -- that
+## raw assignment got silently overwritten by this function's own next
+## periodic scan (every ~0.18-0.4s), so Taunt's stated 3.5s duration lasted
+## well under half a second in practice against any real zombie-type
+## target. A real forced-target override, checked first and bypassing the
+## normal priority scan entirely for its duration, makes Taunt actually
+## work as long as it's supposed to.
+var _forced_target       : Node3D = null
+var _forced_target_timer : float  = 0.0
+func set_forced_target(node: Node3D, duration: float) -> void:
+	_forced_target       = node
+	_forced_target_timer = duration
 
-	target = null
-	target_type = ""
-
-	var best_target : Node3D = null
-	var best_type : String = ""
-
-	var best_score : float = -INF
-
-	# ========================================================
-	# COMBAT THREAT RANGE
-	# ========================================================
-
-	var combat_range : float = aggro_range
-
-	# bosses aggro harder
-	if is_boss:
-		combat_range *= 1.4
-
-	# ========================================================
-	# PRIORITY 1 — PLAYERS
-	# ========================================================
-
-	var _target_players := _players_cache if not _players_cache.is_empty() \
-		else get_tree().get_nodes_in_group("players")
-	for p in _target_players:
-
-		if not is_instance_valid(p):
-			continue
-
-		if p == self:
-			continue
-
-		if not ("team_id" in p):
-			continue
-
-		if int(p.get("team_id")) == team_id:
-			continue
-
-		# Skip blacklisted
-		if _unreachable_blacklist.has(p.get_instance_id()):
-			continue
-
-		var d : float = global_position.distance_to(
-			p.global_position
-		)
-
-		if d > combat_range:
-			continue
-
-		var score : float = 10000.0
-
-		# closer = higher priority
-		score -= d * 25.0
-
-		# weak targets are prioritized
-		if "health" in p and "max_health" in p:
-
-			var hp_pct : float = (
-				float(p.get("health")) /
-				maxf(float(p.get("max_health")), 1.0)
-			)
-
-			score += (1.0 - hp_pct) * 500.0
-
-		# attacking us?
-		if p.has_method("get_target"):
-			if p.get_target() == self:
-				score += 250.0
-
-		if score > best_score:
-
-			best_score = score
-			best_target = p
-			best_type = "player"
-
-	# ========================================================
-	# PRIORITY 2 — ENEMY ZOMBIES / UNITS
-	# Only attack units that are VERY close (blocking path) or
-	# actively attacking this zombie — never hunt across the map.
-	# This prevents zombies getting stuck fighting summons/turrets
-	# instead of marching toward the enemy base.
-	# ========================================================
-	const UNIT_ENGAGE_RANGE : float = 4.5   # melee only — don't chase
-	for u in neighbors_cache:
-
-		if not is_instance_valid(u): continue
-		if u == self: continue
-		if not ("team_id" in u): continue
-		if int(u.get("team_id")) == team_id: continue
-		if _unreachable_blacklist.has(u.get_instance_id()): continue
-
-		var d : float = global_position.distance_to(u.global_position)
-
-		# Only engage if blocking our immediate path
-		if d > UNIT_ENGAGE_RANGE: continue
-
-		var score : float = 3000.0
-		score -= d * 30.0
-
-		# Boost if it's attacking us directly
-		if u.has_method("get_target") and u.get_target() == self:
-			score += 500.0
-
-		if score > best_score:
-			best_score = score
-			best_target = u
-			best_type   = "unit"
-
-	# ========================================================
-	# PRIORITY 3 — TURRETS
-	# ONLY IF NO COMBAT THREATS
-	# ========================================================
-	
-	if best_target == null:
-
-		var _target_turrets := _turrets_cache if not _turrets_cache.is_empty() \
-			else get_tree().get_nodes_in_group("turrets")
-		for t in _target_turrets:
-
-			if not is_instance_valid(t):
-				continue
-	
-			if not ("team_id" in t):
-				continue
-
-			if int(t.get("team_id")) == team_id:
-				continue
-
-			var d : float = global_position.distance_to(
-				t.global_position
-			)
-
-			# REAL BUG FIX (2026-07-24): this used to skip any turret beyond
-			# aggro_range*1.6, so a zombie with no turret nearby fell straight
-			# through to the base (Priority 4) even while enemy turrets were
-			# still standing elsewhere on the map -- "zombies should focus
-			# turrets before base". Turrets are the lowest non-base priority
-			# already (players/units above always win when present), so it's
-			# safe to consider ANY turret here, not just close ones -- the
-			# score (-d*10) still naturally picks the nearest one.
-			var score : float = 1000.0
-
-			score -= d * 10.0
-
-			if score > best_score:
-
-				best_score = score
-				best_target = t
-				best_type = "turret"
-
-	# ========================================================
-	# PRIORITY 4 — BASE PUSH
-	# base literally cannot take damage while a friendly turret is alive
-	# (see basenode.gd take_damage()'s own shield check) -- mirror that
-	# exact rule here so zombies don't even bother pathing to a base they
-	# can't hurt while turrets still stand.
-	# ========================================================
-
-	if best_target == null and is_instance_valid(enemy_base):
-
-		var _base_team : int = int(enemy_base.get("team_id")) if "team_id" in enemy_base else -1
-		var _turret_shield : bool = false
-		for t2 in get_tree().get_nodes_in_group("turrets"):
-			if not is_instance_valid(t2): continue
-			if "team_id" in t2 and int(t2.get("team_id")) != _base_team: continue
-			var t2_alive : bool = false
-			if t2.has_method("is_dead"): t2_alive = not t2.is_dead()
-			elif "health" in t2: t2_alive = float(t2.get("health")) > 0.0
-			if t2_alive:
-				_turret_shield = true
-				break
-
-		if not _turret_shield:
-			best_target = enemy_base
-			best_type = "base"
-
-	# ========================================================
-	# APPLY TARGET
-	# ========================================================
-
-	target = best_target
-	target_type = best_type
-
-	# ========================================================
-	# AI MODE — only override if no squad order is active
-	# ========================================================
-
-	# Never let targeting override a player-issued command
-	if squad_order != SquadOrder.NONE:
+func _select_target(require_cone: bool, forward_dir: Vector3, engage_range: float) -> void:
+	if is_instance_valid(_forced_target) and _forced_target_timer > 0.0:
+		target      = _forced_target
+		target_type = "unit"
+		if squad_order == SquadOrder.NONE:
+			ai_mode = AIMode.ATTACK
 		return
 
+	var picked : Dictionary = TargetPriority.select(
+		self, team_id, is_boss, aggro_range, engage_range,
+		require_cone, forward_dir, BLOCKER_CONE_DOT,
+		true, Callable(self, "_has_line_of_sight"),
+		(_players_cache if not _players_cache.is_empty() else get_tree().get_nodes_in_group("players")),
+		neighbors_cache,
+		(_turrets_cache if not _turrets_cache.is_empty() else get_tree().get_nodes_in_group("turrets")),
+		_unreachable_blacklist,
+		enemy_base
+	)
+	target = picked.target
+	target_type = picked.target_type
+
+	# Never let targeting override a player-issued command's ai_mode
+	if squad_order != SquadOrder.NONE:
+		return
 	if is_instance_valid(target):
-		if target_type == "base":
-			ai_mode = AIMode.LANE_PUSH
-		else:
-			ai_mode = AIMode.ATTACK
+		ai_mode = AIMode.LANE_PUSH if target_type == "base" else AIMode.ATTACK
 	else:
 		ai_mode = AIMode.LANE_PUSH
 
-func _get_threat_score(node: Node3D, dist: float) -> float:
-
-	if threat_scores.has(node):
-		return threat_scores[node]
-
-	return 100.0 / maxf(dist, 1.0)
+## Same BLOCKER_RANGE/BLOCKER_RANGE_EXIT hysteresis _tick_lane_march uses for
+## _march_engaged, applied to the squad-order paths (_tick_attack/_defend/
+## _follow) via the existing target/target_type state instead of a separate
+## tracked bool -- "already engaged with a unit within the wider exit
+## threshold" reuses the exit range this scan too, so squad-ordered zombies
+## get the same 2026-07-25 anti-jitter fix the default march path already had.
+func _unit_engage_range() -> float:
+	if is_instance_valid(target) and target_type == "unit" \
+			and global_position.distance_to(target.global_position) <= BLOCKER_RANGE_EXIT:
+		return BLOCKER_RANGE_EXIT
+	return BLOCKER_RANGE
 
 # ============================================================
 # LANE MARCH — TD/MOBA model (always march, only attack blockers)
@@ -1760,13 +1785,24 @@ func _tick_lane_march(delta: float) -> void:
 			_march_blocker = null
 			_march_engaged = false
 
-	# ── 2. Periodic blocker scan ───────────────────────────
+	# ── 2. Periodic scan (unified TargetPriority: players > units > turrets
+	# > base). target_type=="base" is never stored as a _march_blocker (the
+	# base must route through _get_march_destination()'s gate-awareness, not
+	# beeline into a castle wall like a melee blocker would) -- it's read
+	# directly from `target`/`target_type` in step 4 instead.
 	_march_scan_timer -= delta
 	if _march_scan_timer <= 0.0:
 		_march_scan_timer = MARCH_SCAN_INTERVAL
-		var _new_blocker := _find_blocker()
-		if _new_blocker != _march_blocker: _march_engaged = false
-		_march_blocker = _new_blocker
+		var march_dir : Vector3 = Vector3.ZERO
+		if is_instance_valid(enemy_base):
+			march_dir = (enemy_base.global_position - global_position)
+			march_dir.y = 0.0
+			if march_dir.length_squared() > 0.01: march_dir = march_dir.normalized()
+		var engage_range : float = BLOCKER_RANGE_EXIT if _march_engaged else BLOCKER_RANGE
+		_select_target(true, march_dir, engage_range)
+		var picked : Node3D = target if target_type != "base" else null
+		if picked != _march_blocker: _march_engaged = false
+		_march_blocker = picked
 
 	# ── 3. If blocked: approach, then stop and attack ─────
 	# REAL BUG FIX (2026-07-25): this used to stop-and-attack immediately
@@ -1786,29 +1822,34 @@ func _tick_lane_march(delta: float) -> void:
 			velocity.x = move_toward(velocity.x, 0.0, move_speed * 12.0 * delta)
 			velocity.z = move_toward(velocity.z, 0.0, move_speed * 12.0 * delta)
 			_face_target(_march_blocker.global_position)
-			# REAL BUG FIX (2026-07-25): "fire turrets aren't taking damage from
-			# zombies" -- target_type defaults to "" and is only ever set by
-			# _find_best_target() (squad-order path). The default march path
-			# (here) never set it, so _try_attack()'s "not turret/base" penalty
-			# (-55% damage) always silently applied even when the blocker WAS a
-			# turret -- on top of the turret's own 15% damage_resistance, real
-			# per-hit damage was reduced to under half, on turrets already
-			# tuned to have thousands of HP. Set it correctly so turret/base
-			# hits land at full strength like they're supposed to.
-			if _march_blocker.is_in_group("turrets"): target_type = "turret"
-			elif _march_blocker.is_in_group("players"): target_type = "player"
-			else: target_type = "unit"
+			# target_type is already set correctly by _select_target() above
+			# (was a manual is_in_group() re-derivation before the rebuild --
+			# see the 2026-07-25 "turrets not taking damage" fix this used to
+			# be needed for; TargetPriority.select() sets it directly now).
 			_try_attack(_march_blocker)
 		else:
-			var chase_speed : float = move_speed * enrage_speed_mult * (1.0 - current_slow)
+			var chase_speed : float = move_speed * enrage_speed_mult * director_speed_mult * (1.0 - current_slow)
 			_move_toward(_march_blocker.global_position, chase_speed, delta)
 		return
 
-	# ── 4. Clear march: navigate to enemy base ─────────────
+	# ── 4. No blocker: attack the base if in range and reachable
+	# (REAL BUG FIX, 2026-08-24 rebuild: this path previously had NO way to
+	# ever attack the base at all once every turret was destroyed -- only
+	# LOD.CHEAP's separate simplified logic could. A FULL-LOD marching
+	# zombie just stood at the base forever, doing nothing.), otherwise
+	# march toward it (gate-routed).
 	if not is_instance_valid(enemy_base):
 		return
+	if target_type == "base" and is_instance_valid(target):
+		var base_dist : float = global_position.distance_to(enemy_base.global_position)
+		if base_dist <= _get_attack_range():
+			velocity.x = move_toward(velocity.x, 0.0, move_speed * 10.0 * delta)
+			velocity.z = move_toward(velocity.z, 0.0, move_speed * 10.0 * delta)
+			_face_target(enemy_base.global_position)
+			_try_attack(enemy_base)
+			return
 	var dest : Vector3 = _get_march_destination()
-	var effective_speed : float = move_speed * enrage_speed_mult * (1.0 - current_slow)
+	var effective_speed : float = move_speed * enrage_speed_mult * director_speed_mult * (1.0 - current_slow)
 	_move_toward(dest, effective_speed, delta)
 
 
@@ -1874,136 +1915,6 @@ func _has_line_of_sight(target: Node3D) -> bool:
 		or (target is Node and (target as Node).is_ancestor_of(collider as Node) if collider is Node else false)
 
 
-func _find_blocker() -> Node3D:
-	# Only care about units in a forward cone within BLOCKER_RANGE.
-	# Use neighbors_cache (ZHM-maintained) for performance.
-	var march_dir := Vector3.ZERO
-	if is_instance_valid(enemy_base):
-		march_dir = (enemy_base.global_position - global_position)
-		march_dir.y = 0.0
-		if march_dir.length_squared() > 0.01: march_dir = march_dir.normalized()
-
-	var best_dist  : float   = BLOCKER_RANGE
-	var best_node  : Node3D  = null
-
-	# Check players first (highest threat). Use ZHM-pushed cache when available
-	# so all zombies in the same spatial cell share one group-scan result.
-	# REAL BUG FIX (2026-07-24): this used the tiny melee BLOCKER_RANGE (2.8u)
-	# for players too, so a player standing anywhere but almost adjacent was
-	# invisible to the default (non-squad) march AI -- "zombies don't go for
-	# player 1st priority when close". Players get their own much wider
-	# engage range (matches aggro_range, same as the squad-order targeting
-	# path) while units/turrets keep their existing ranges below.
-	# REAL FIX (2026-07-25): the default march AI only ever compared raw
-	# distance ("nearest in cone wins"), unlike the squad-order priority
-	# system (_find_best_target) which also weights weaker/lower-HP targets
-	# higher. That made the common case (zombies with no squad order, i.e.
-	# almost all of them) look like it had no real target prioritization at
-	# all — just "attack whatever's closest." Score candidates the same way
-	# _find_best_target does (closer + weaker wins) instead of pure distance,
-	# within the exact same range/cone/LOS gates as before.
-	var player_best_dist : float = aggro_range
-	var player_best_score : float = -INF
-	var _blocker_players := _players_cache if not _players_cache.is_empty() \
-		else get_tree().get_nodes_in_group("players")
-	for p in _blocker_players:
-		if not is_instance_valid(p) or p is not Node3D: continue
-		if "team_id" in p and int(p.get("team_id")) == team_id: continue
-		var diff := (p as Node3D).global_position - global_position
-		diff.y = 0.0
-		var d := diff.length()
-		if d > player_best_dist: continue
-		# Cone check — is it in front of us?
-		if d > 0.1 and march_dir.length_squared() > 0.01:
-			if diff.normalized().dot(march_dir) < BLOCKER_CONE_DOT: continue
-		if not _has_line_of_sight(p as Node3D): continue
-		var score : float = -d * 25.0
-		if "health" in p and "max_health" in p:
-			var hp_pct : float = float(p.get("health")) / maxf(float(p.get("max_health")), 1.0)
-			score += (1.0 - hp_pct) * 500.0
-		if score > player_best_score:
-			player_best_score = score; player_best_dist = d; best_node = p as Node3D
-	if is_instance_valid(best_node):
-		return best_node
-
-	# Check nearby units (from ZHM neighbors cache)
-	var unit_best_score : float = -INF
-	for u in neighbors_cache:
-		if not is_instance_valid(u) or u == self: continue
-		if not (u is Node3D): continue
-		if "team_id" in u and int(u.get("team_id")) == team_id: continue
-		if "is_dead" in u and u.get("is_dead") == true: continue
-		var diff := (u as Node3D).global_position - global_position
-		diff.y = 0.0
-		var d := diff.length()
-		if d > BLOCKER_RANGE: continue
-		if d > 0.1 and march_dir.length_squared() > 0.01:
-			if diff.normalized().dot(march_dir) < BLOCKER_CONE_DOT: continue
-		if not _has_line_of_sight(u as Node3D): continue
-		var score : float = -d * 30.0
-		if "health" in u and "max_health" in u:
-			var hp_pct : float = float(u.get("health")) / maxf(float(u.get("max_health")), 1.0)
-			score += (1.0 - hp_pct) * 300.0
-		if score > unit_best_score:
-			unit_best_score = score; best_dist = d; best_node = u as Node3D
-
-	# REAL BUG FIX (2026-07-20): "make sure they target turrets" -- this
-	# blocker scan (the one actually used by the default LANE_PUSH march,
-	# _tick_lane_march -> _find_blocker) never checked the "turrets" group
-	# at all. _find_best_target() DOES have turret-priority logic, but
-	# that function is never called from the default march path -- so
-	# zombies walked straight past turrets unless specifically squad-
-	# ordered to attack. This is also what makes "destroy all turrets,
-	# THEN push the base" happen naturally: _tick_lane_march only resumes
-	# marching toward enemy_base once _march_blocker is null, and turrets
-	# now count as real blockers.
-	#
-	# A real unit blocker within melee range (best_node above) still takes
-	# priority -- an actual attacker in your face matters more than a
-	# stationary turret. REAL BUG FIX (2026-07-24): turrets used to only be
-	# considered within BLOCKER_RANGE*2.2 (~6u) in the same narrow forward
-	# cone as melee blockers -- turrets set back from the direct lane
-	# (normal defensive placement) were essentially invisible, so zombies
-	# marched straight past them to the base ("zombies should focus turrets
-	# before base"). Turrets are static map fixtures, not something you can
-	# dodge past by walking around -- consider ANY living enemy turret, no
-	# range cap and no cone restriction, so the march always resolves every
-	# turret before the base ever becomes reachable (base is invulnerable
-	# anyway while any turret stands -- see basenode.gd take_damage()).
-	if best_node == null:
-		var turret_best_dist : float = INF
-		var _blocker_turrets := _turrets_cache if not _turrets_cache.is_empty() \
-			else get_tree().get_nodes_in_group("turrets")
-		for t in _blocker_turrets:
-			if not is_instance_valid(t) or not (t is Node3D): continue
-			if "team_id" in t and int(t.get("team_id")) == team_id: continue
-			if "is_dead" in t and t.get("is_dead") == true: continue
-			elif "health" in t and float(t.get("health")) <= 0.0: continue
-			# REAL BUG FIX (2026-07-25): "zombies stacking on the other side of
-			# a castle wall trying to attack a turret on the other side" /
-			# "surrounding the base instead of prioritizing turrets" -- this
-			# picked the globally-nearest turret with NO reachability check at
-			# all. A turret sitting inside the castle is visible to this scan
-			# from clear across the map, gets committed to as a "blocker", and
-			# the zombie then walks in a dead straight line at it -- hitting
-			# the curtain wall and piling up there, since a blocker commit
-			# skips the gate-routing march step entirely (_get_march_destination
-			# only runs when there's NO blocker). Reject turrets with a wall in
-			# the way so the zombie instead falls through to the normal
-			# gate-routed march and only locks onto a turret once it's
-			# actually reachable in a straight line (e.g. already through the
-			# gate).
-			if not _has_line_of_sight(t as Node3D): continue
-			var tdiff := (t as Node3D).global_position - global_position
-			tdiff.y = 0.0
-			var td := tdiff.length()
-			if td < turret_best_dist:
-				turret_best_dist = td
-				best_node = t as Node3D
-
-	return best_node
-
-
 # ============================================================
 # LANE PUSH (legacy — kept for squad-ordered ATTACK mode)
 # ============================================================
@@ -2036,7 +1947,7 @@ func _tick_lane_push(delta: float) -> void:
 
 			return
 
-		var effective_speed : float = move_speed * enrage_speed_mult * (
+		var effective_speed : float = move_speed * enrage_speed_mult * director_speed_mult * (
 			1.0 - current_slow
 		)
 
@@ -2097,7 +2008,7 @@ func _tick_attack(delta: float) -> void:
 		_tick_lane_push(delta)
 		return
 	_retarget_timer = RETARGET_INTERVAL
-	_find_best_target()
+	_select_target(false, Vector3.ZERO, _unit_engage_range())
 	if is_instance_valid(target):
 		_tick_lane_push(delta)
 	else:
@@ -2113,7 +2024,7 @@ func _tick_defend(delta: float) -> void:
 	if is_instance_valid(target) and _target_in_defend_range():
 		_tick_lane_push(delta)
 		return
-	_find_best_target()
+	_select_target(false, Vector3.ZERO, _unit_engage_range())
 	if is_instance_valid(target) and _target_in_defend_range():
 		_tick_lane_push(delta)
 		return
@@ -2156,7 +2067,7 @@ func _tick_follow(delta: float) -> void:
 			return
 		target = null
 	# Scan for enemies near the player
-	_find_best_target()
+	_select_target(false, Vector3.ZERO, _unit_engage_range())
 	if is_instance_valid(target):
 		var near : bool = target.global_position.distance_to(follow_target.global_position) <= 12.0
 		if near:
@@ -2349,7 +2260,17 @@ func _try_attack(t: Node3D) -> void:
 			return
 
 	attack_timer       = attack_cooldown
-	_attack_anim_timer = 0.7   # block _update_animation for 0.7s
+	# REAL BUG FIX (2026-08-24 rebuild): this used to be a hardcoded 0.7 --
+	# written back when attack.res was a silent no-op (mixamorig5_ bone-name
+	# mismatch, fixed earlier the same day) so nobody could have measured
+	# the REAL clip length. The actual attack.res animation is ~2.63s long.
+	# For the ~1.9s after the old 0.7s window expired but the swing was
+	# still visibly playing, _apply_gravity()'s suppression (below) was
+	# unprotected -- if is_on_floor() flipped false at all mid-swing (a
+	# knockback landing, a slope, an elite impulse), the body fell/sank
+	# uncontested for the rest of the visible attack. _attack_anim_len is
+	# now derived from the real clip in _ready(), clamped to attack_cooldown.
+	_attack_anim_timer = _attack_anim_len
 
 	_play_sound(attack_sounds, 5.0, "zombie_attack")
 
@@ -2389,7 +2310,7 @@ func _try_attack(t: Node3D) -> void:
 	if is_instance_valid(t) and t is Node3D:
 		_play_procedural_attack_lunge((t as Node3D).global_position)
 
-	var final_damage : float = damage * enrage_damage_mult
+	var final_damage : float = damage * enrage_damage_mult * director_damage_mult
 
 	# Enchant stacking: each stack = +15% (cap 5 stacks = +75%)
 	var enchant_mult : float = 1.0 + energized_stacks * 0.15 if energized_timer > 0.0 else 1.0
@@ -2410,6 +2331,14 @@ func _try_attack(t: Node3D) -> void:
 
 	if t.has_method("take_damage"):
 		t.take_damage(final_damage, self)
+		# Player-team-only Hebbian reinforcement -- see brain-load comment
+		# in _ready(). A defend creep that actually lands a killing blow
+		# strengthens Alert->Aggro (bounded by Spikeling's own GROW_CEIL/
+		# RELAX_RATE homeostasis), so it gets measurably bolder over a
+		# match the same way team_ally.gd's allies do. Enemy zombies never
+		# call brain.learn() at all -- unchanged from before this feature.
+		if team_id == 1 and is_instance_valid(brain) and "is_dead" in t and t.get("is_dead"):
+			brain.learn(1.0)
 		# PILLAR 1 -- GAME FEEL & JUICE (2026-07-20): Screenshake.gd was a
 		# fully-built autoload (hit/explosion/base_hit/etc. presets) that
 		# was never actually called ANYWHERE in the codebase -- zombie
@@ -2611,6 +2540,14 @@ func take_damage(
 	damage_type: int = DamageType.PHYSICAL
 ) -> void:
 
+	# Defensive, matching Egg/HiveCluster/player.gd's convention: CombatRelay
+	# only ever calls take_damage() on the server's own copy of a target
+	# (basegun.gd's authority-gated resolve-locally-or-relay branch), so this
+	# guard isn't a path any current caller reaches -- insurance against a
+	# future caller that isn't as careful.
+	if NetworkManager.is_networked and not is_multiplayer_authority():
+		return
+
 	if is_dead:
 		return
 
@@ -2654,6 +2591,12 @@ func take_damage(
 	var reduced : float = _apply_armor(amount, damage_type)
 
 	health -= reduced
+
+	# Player-team-only self-preservation reflex -- see brain-load comment in
+	# _ready(). Enemy zombies get no extra stimulus here; their Caution
+	# still only comes from losing ground on a target, same as before.
+	if team_id == 1 and is_instance_valid(brain):
+		brain.stimulate("Caution", ALLY_DAMAGE_CAUTION_STIMULUS)
 
 	_play_sound(hurt_sounds, 2.0)
 
@@ -3500,78 +3443,24 @@ func _award_gold() -> void:
 # STUCK
 # ============================================================
 
+## Thin wrapper around MovementRecovery.gd (2026-08-24 rebuild) -- keeps this
+## script's own combat-aware guard (see the 2026-08-24 comment history: firing
+## _unstuck() on a zombie deliberately holding still to melee an in-range
+## target caused exactly the random pop/hop sink bug near walls/ramps), then
+## delegates the actual stuck-detection + recovery to the shared class.
 func _update_stuck(delta: float) -> void:
-
-	last_position_timer += delta
-
-	if last_position_timer < 0.5:
+	if attack_timer > 0.0 and is_instance_valid(target) \
+			and global_position.distance_to(target.global_position) <= _get_attack_range() + 1.0:
+		_recovery.reset_progress(global_position)
 		return
 
-	last_position_timer = 0.0
-
-	var moved : float = Vector2(
-		global_position.x - last_position.x,
-		global_position.z - last_position.z
-	).length()
-
-	last_position = global_position
-
-	if moved < stuck_distance:
-
-		stuck_timer += 0.5
-
-		if stuck_timer >= stuck_time:
-			stuck_timer = 0.0
-			_unstuck()
-
-	else:
-
-		stuck_timer = 0.0
-
-# ============================================================
-# UNSTUCK
-# ============================================================
-
-# ============================================================
-# UNSTUCK (SAFE NAV VERSION)
-# ============================================================
-
-func _unstuck() -> void:
-
-	var dir := Vector3(
-		randf_range(-1.0, 1.0),
-		0.0,
-		randf_range(-1.0, 1.0)
-	)
-
-	if dir.length_squared() <= 0.01:
-		dir = Vector3.FORWARD
-
-	dir = dir.normalized()
-
-	var test_pos : Vector3 = global_position + dir * 1.5
-
-	var nav_map : RID = get_world_3d().navigation_map
-
-	if nav_map != RID():
-
-		var closest : Vector3 = NavigationServer3D.map_get_closest_point(
-			nav_map,
-			test_pos
-		)
-
-		if closest.distance_to(test_pos) < 1.0:
-			global_position = test_pos
-
-	else:
-
-		global_position = test_pos
-
-	velocity.x += dir.x * 5.0
-	velocity.z += dir.z * 5.0
-
-	if is_on_floor():
-		velocity.y = 4.0
+	var r : Dictionary = _recovery.tick(delta, global_position, stuck_distance, stuck_time, get_world_3d(), is_on_floor())
+	if r.fired:
+		global_position = r.teleport_to
+		velocity.x += r.velocity_add.x
+		velocity.z += r.velocity_add.y
+		if r.set_velocity_y != null:
+			velocity.y = r.set_velocity_y
 
 # ============================================================
 # HEALTH BAR — PRIMARY (ORIGINAL)
@@ -4310,6 +4199,22 @@ func set_lod(level: int) -> void:
 			lod = LOD.SLEEP
 			set_physics_process(false)
 
+		# REAL BUG FIX (2026-08-24): ZombieHordeManager._update_z1_lod() computes
+		# a 4-band distance tier (0/1/2/3, using LOD0/1/2_DIST) and calls
+		# set_lod(nlod) directly -- but this match previously had no case for
+		# level 3 at all, so a Z1-active zombie beyond LOD2_DIST (350 units)
+		# silently kept whatever lod/physics_process state it last had. Since
+		# there's also no Z1->Z2 demotion path (a Z1 zombie only ever leaves
+		# _z1_active by dying), a zombie that drifted or got left behind past
+		# 350 units just kept running its last tier's full physics/AI cost
+		# forever while invisible -- exactly the kind of leak the whole LOD
+		# system exists to prevent. Mapped to SLEEP (physics off), matching
+		# the "LOD 3 -> physics OFF (sleeping)" contract _update_z1_lod()'s
+		# own header comment already describes.
+		3:
+			lod = LOD.SLEEP
+			set_physics_process(false)
+
 func set_mesh_near(near: bool) -> void:
 	if _mesh_near == near: return
 	_mesh_near = near
@@ -4331,11 +4236,35 @@ func reset(pos: Vector3) -> void:
 	target = null
 	target_type = ""
 
+	# REAL BUG FIX (2026-08-24): "zombies run to the corner of the map when
+	# they spawn, not at base/player". This object pool (see
+	# ZombieHordeManager._promote_to_z1) reuses the SAME zombie instance
+	# across completely unrelated lives -- one life as a HiveCluster patrol
+	# guard (command_patrol() sets squad_order=PATROL + patrol_points to
+	# that specific hive's ring) or a player-commanded unit
+	# (command_attack_position() sets squad_order=ATTACK + squad_position
+	# to wherever was clicked), the next life as a fresh horde marcher after
+	# _return_to_pool()/_promote_to_z1(). None of that state was ever
+	# cleared here -- _tick_full()'s very first check is
+	# `if squad_order != SquadOrder.NONE: ... return`, which routes a
+	# "fresh" zombie straight to _tick_patrol()/_tick_attack() using
+	# leftover patrol_points/squad_position from its PREVIOUS life instead
+	# of marching to the CURRENT enemy_base, and those stale coordinates
+	# can be anywhere on the map -- including nowhere near the base or
+	# player. clear_order() already existed for this exact purpose but was
+	# never called from reset(); also clears the two fields it doesn't
+	# (ai_mode, patrol_points/_patrol_idx) and the march-blocker cache so a
+	# recycled instance starts every new life with zero cross-life state.
+	clear_order()
+	ai_mode = AIMode.LANE_PUSH
+	patrol_points = []
+	_patrol_idx = 0
+	_march_blocker = null
+	_march_engaged = false
+
 	velocity = Vector3.ZERO
 
-	stuck_timer = 0.0
-
-	last_position = pos
+	_recovery.reset_progress(pos)
 
 	energized_timer = 0.0
 
@@ -4359,6 +4288,8 @@ func reset(pos: Vector3) -> void:
 
 	enrage_damage_mult = 1.0
 	enrage_speed_mult = 1.0
+	director_speed_mult = 1.0
+	director_damage_mult = 1.0
 	_aggro_timer = 0.0
 	_caution_timer = 0.0
 	_smooth_speed_mult = 1.0
@@ -4566,6 +4497,11 @@ signal boss_phase_started(phase_index)
 signal sync_snapshot_ready(snapshot)
 func convert_team() -> void:
 	team_id = 2 if team_id == 1 else 1
+	# _find_bases() now early-returns if both are already valid (see its
+	# own comment) -- null them first so flipping team actually re-derives
+	# both instead of keeping the pre-flip assignments.
+	enemy_base = null
+	friendly_base = null
 	_find_bases()
 
 	target = null

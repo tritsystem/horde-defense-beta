@@ -9,7 +9,20 @@ extends Node
 
 @export var menu_scene : PackedScene
 
-const DEFAULT_MENU_PATH := "res://scenes/ui/GameMenu.tscn"
+# REAL BUG FIX (2026-08-24): "can't open main.tscn in the editor -- missing
+# dependencies" -- main.tscn statically assigned menu_scene to MainMenu.tscn
+# via ExtResource, while MainMenu.tscn itself holds its own ExtResource back
+# to main.tscn (game_scene, for the Play button) -- a genuine circular
+# PackedScene dependency between the two .tscn files. The OLD default here
+# (res://scenes/ui/GameMenu.tscn) never actually existed on disk, so this
+# fallback's own ResourceLoader.exists() check was always false and dead --
+# menu_scene only ever worked because main.tscn's static assignment
+# overrode it. Pointing the fallback at the real, currently-used scene and
+# removing that static assignment from main.tscn (see main.tscn's own node
+# data) breaks the circular ext_resource link -- MainMenu.tscn now loads
+# dynamically at runtime here instead of being a hard file-level dependency
+# of main.tscn, with identical behavior.
+const DEFAULT_MENU_PATH := "res://MainMenu.tscn"
 
 var _menu_instance : Control = null
 var _menu_visible  : bool    = false

@@ -330,3 +330,95 @@ func _build_collision() -> void:
 	if Engine.is_editor_hint() and get_tree() and get_tree().edited_scene_root:
 		_body.owner = get_tree().edited_scene_root
 		col.owner = get_tree().edited_scene_root
+
+
+# ============================================================
+# RUNTIME TERRAFORMING (2026-08-24 -- ported from Tribe's terrain_gen.gd
+# ::_edit_disc/flatten_area/raise_area). This script already uses the
+# same technique Tribe's does (raw _heights array -> mesh + collision, see
+# the REWRITE note at the top of this file) -- a much more direct, faithful
+# port than going through any addon API: same array, same disc-shaped
+# smoothstep-falloff edit shape, just mutates _heights in place by grid
+# index and rebuilds mesh+collision once after (matching generate()'s own
+# existing rebuild calls, not a new mechanism).
+# ============================================================
+
+## Flattens a disc of terrain toward target_height (world Y). strength=1.0
+## fully flattens at the center, falling off smoothly (no change) at radius.
+func flatten_area(center_x: float, center_z: float, radius: float, target_height: float, strength: float = 1.0) -> void:
+	_edit_disc(center_x, center_z, radius, func(h: float, falloff: float) -> float:
+		return lerpf(h, target_height, falloff * strength))
+
+
+## Raises (delta > 0) or lowers (delta < 0) a disc of terrain by up to
+## delta at the center, falling off smoothly (no change) at radius.
+func raise_area(center_x: float, center_z: float, radius: float, delta: float, strength: float = 1.0) -> void:
+	_edit_disc(center_x, center_z, radius, func(h: float, falloff: float) -> float:
+		return h + delta * falloff * strength)
+
+
+## Shared disc-edit driver: iterates only the grid cells whose bounding box
+## overlaps the disc (not the whole heightmap), computes a smoothstep
+## falloff per cell (1.0 at center, 0.0 at radius -- same shape as Tribe's
+## _edit_disc), applies edit_fn(current_height, falloff), then rebuilds
+## mesh+collision once at the end (a discrete per-tool-use edit, not a
+## per-frame stream, so a single full rebuild is cheap enough -- Tribe's
+## own 20/sec throttle exists for continuous drag-edits, which this
+## key-triggered tool doesn't do).
+func _edit_disc(center_x: float, center_z: float, radius: float, edit_fn: Callable) -> void:
+	if _heights.is_empty():
+		push_warning("[ValleyTerrain3D] _edit_disc: terrain not generated yet")
+		return
+	var half  : float = world_size * 0.5
+	var i_min : int = int(clampf((center_x - radius + half) / _cell, 0, _res - 1))
+	var i_max : int = int(clampf((center_x + radius + half) / _cell, 0, _res - 1))
+	var j_min : int = int(clampf((center_z - radius + half) / _cell, 0, _res - 1))
+	var j_max : int = int(clampf((center_z + radius + half) / _cell, 0, _res - 1))
+	var r2      : float = radius * radius
+	var touched : bool  = false
+	for j in range(j_min, j_max + 1):
+		for i in range(i_min, i_max + 1):
+			var wx : float = -half + float(i) * _cell
+			var wz : float = -half + float(j) * _cell
+			var dx : float = wx - center_x
+			var dz : float = wz - center_z
+			var dist2 : float = dx * dx + dz * dz
+			if dist2 > r2: continue
+			var dist : float = sqrt(dist2)
+			var t       : float = clampf(dist / radius, 0.0, 1.0)
+			var falloff : float = 1.0 - smoothstep(0.0, 1.0, t)
+			var idx : int = j * _res + i
+			_heights[idx] = edit_fn.call(_heights[idx], falloff)
+			touched = true
+	if touched:
+		_build_mesh()
+		_build_collision()
+
+
+# ============================================================
+# BIOME CLASSIFICATION (2026-08-24 -- ported from Tribe's terrain_gen.gd
+# ::biome_at(): elevation-fraction bucketed into named bands). Reuses the
+# EXACT same fraction thresholds _tint() already uses above (0.08/0.35/
+# 0.70) rather than an independently-chosen set -- so "biome" boundaries
+# line up with what's actually visually distinct on screen (this script
+# has no texture-splat/control-map step to paint separately -- ground
+# appearance is real per-vertex color, see _tint()'s own header comment).
+# ============================================================
+
+enum Biome { VALLEY, LOWER_SLOPE, UPPER_SLOPE, PEAK }
+
+func biome_at(x: float, z: float) -> Biome:
+	var h : float = height_at(x, z)
+	var f : float = clampf(h / maxf(1.0, ridge_height + noise_strength), 0.0, 1.0)
+	if f < 0.08:   return Biome.VALLEY
+	elif f < 0.35: return Biome.LOWER_SLOPE
+	elif f < 0.70: return Biome.UPPER_SLOPE
+	else:          return Biome.PEAK
+
+func biome_name_at(x: float, z: float) -> String:
+	match biome_at(x, z):
+		Biome.VALLEY:       return "valley"
+		Biome.LOWER_SLOPE:  return "lower_slope"
+		Biome.UPPER_SLOPE:  return "upper_slope"
+		Biome.PEAK:         return "peak"
+	return "valley"

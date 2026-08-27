@@ -140,9 +140,19 @@ func _spawn_castle() -> void:
 	root.global_position = gp
 
 	# Palette
-	var wall_col  : Color = Color(0.50, 0.58, 0.66) if team_id == 1 else Color(0.60, 0.38, 0.35)
-	var stone_col : Color = Color(0.82, 0.77, 0.68)
-	var wood_col  : Color = Color(0.32, 0.22, 0.14)
+	# DARK-HORROR RESKIN: was a bright cool-blue/warm-red team tint on a
+	# light cream stone (Color(0.82,0.77,0.68) read as nearly white under
+	# this scene's old flat lighting). Retinted to a grimy, desaturated
+	# brutalist stone/metal palette -- team read is kept (cool grey-green
+	# vs warm rust-brown) but darkened and desaturated to match
+	# theme_horror/HorrorTheme.gd's palette. See that file for why this
+	# constant-retint approach was used instead of a shared .tres resource
+	# (the castle_skin texture path in _make_mat() needs a plain Color,
+	# not a Material, so there's nothing to swap a resource reference for
+	# here -- these ARE the same numbers as the library's intent).
+	var wall_col  : Color = Color(0.26, 0.30, 0.28) if team_id == 1 else Color(0.34, 0.24, 0.19)
+	var stone_col : Color = Color(0.40, 0.38, 0.33)
+	var wood_col  : Color = Color(0.20, 0.14, 0.09)
 
 	var sm := _make_mat(wall_col)
 	var tm := _make_mat(stone_col)
@@ -821,7 +831,17 @@ func _flash_protected() -> void:
 
 
 func _on_destroyed() -> void:
-	var gm := get_tree().get_first_node_in_group("game_manager")
+	# REAL BUG FIX (2026-08-24): "base being dead should auto end game" --
+	# _on_base_died() (added this session to game_phase_script.gd) can only
+	# fire if this lookup actually reaches that node. "game_manager" is the
+	# SAME ambiguous group game_phase_script.gd's own _ready() comment
+	# already documents as unreliable (main.tscn has a second, unrelated
+	# legacy node in it too -- get_first_node_in_group() picked the wrong
+	# one in 2 of 3 headless runs when this was measured) -- that's exactly
+	# why "economy_controller" exists as a dedicated, unambiguous group for
+	# this same node. Use it here too instead of repeating the same
+	# coin-flip lookup for the single most important callback on the base.
+	var gm := get_tree().get_first_node_in_group("economy_controller")
 	if is_instance_valid(gm) and gm.has_method("_on_base_died"):
 		gm._on_base_died(team_id)
 

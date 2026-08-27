@@ -14,6 +14,13 @@ const SPAWN_RADIUS := 2.5
 
 var _panel : Control = null
 
+## Lets other scripts (player.gd's _unhandled_input mouse-recapture guard)
+## check whether this panel is currently blocking gameplay, the same way
+## they already check _class_selecting/_deck_open. See player.gd for the
+## real bug this closes.
+func is_choice_open() -> bool:
+	return is_instance_valid(_panel)
+
 
 func _ready() -> void:
 	layer = 60
@@ -26,6 +33,13 @@ func _on_ally_choice_available(pid: int) -> void:
 	if is_instance_valid(_panel):
 		_panel.queue_free()
 	_build_panel(pid)
+	# REAL BUG FIX: this panel's "Choose" buttons were never clickable --
+	# gameplay leaves the mouse MOUSE_MODE_CAPTURED (hidden, locked to
+	# center) for FPS look, and nothing here ever released it, so the
+	# cursor needed to actually click a card never appeared. Mirrors the
+	# pattern player.gd's own notify_shop_state()/shopui.gd already use
+	# for the shop panel.
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
 func _build_panel(pid: int) -> void:
@@ -125,6 +139,10 @@ func _choose(pid: int, kind: String) -> void:
 	if is_instance_valid(_panel):
 		_panel.queue_free()
 	_panel = null
+	# Restore FPS mouse-look now that the choice is made -- see the
+	# matching set_mouse_mode(VISIBLE) in _on_ally_choice_available().
+	if is_instance_valid(player) and int(player.get("device_id") if "device_id" in player else -1) == -1:
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
 func _spawn_pack(player: Node3D, kind: String) -> void:
@@ -136,6 +154,13 @@ func _spawn_pack(player: Node3D, kind: String) -> void:
 		var angle := (TAU / PACK_SIZE) * i
 		var offset := Vector3(cos(angle), 0, sin(angle)) * SPAWN_RADIUS
 		ally.global_position = player.global_position + offset
+		# Bats use this every frame to hover at a distinct point around the
+		# player/target instead of all converging on the same spot -- see
+		# bat_ally.gd's hover_offset for the full story. Harmless no-op for
+		# rats (rat_ally.gd has no such property, "hover_offset" in ally
+		# there is just false).
+		if "hover_offset" in ally:
+			ally.set("hover_offset", offset)
 		get_tree().current_scene.add_child(ally)
 		ally.set("team_id", team_id)
 		ally.set("owner_player", player)

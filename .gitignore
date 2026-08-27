@@ -27,3 +27,6 @@ Thumbs.db
 export.cfg
 export_presets.cfg
 *.translation
+
+# Claude Code worktrees (huge, machine-local, not project source)
+.claude/

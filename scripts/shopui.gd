@@ -1970,6 +1970,22 @@ func _build_creep_catalogue() -> void:
 			var lbl : String = "%s %s" % [def.get("icon","🧟"), def["name"]]
 			_creep_catalogue.append({"label":lbl,"cost":cost,"scene":scene,"kind":"creep","desc":def.get("ability","")})
 			_add_picker_row(_creep_catalogue.size()-1, def.get("icon","🧟"), def["name"], cost)
+
+		# ── Unlock the next creep type (progressive deck economy) ──────
+		# "spawn me with my own mini army that I progressively unlock" --
+		# a locked creep shows up as one more catalogue row, but confirming
+		# it spends gold to permanently ADD it to the deck instead of
+		# spawning a unit (see _picker_confirm_purchase's locked branch).
+		var next_id : String = dm.get_next_unlockable(pid) if dm.has_method("get_next_unlockable") else ""
+		if next_id != "":
+			var next_def : Dictionary = dm.get_creep_def(next_id)
+			var unlock_cost : int = int(dm.get_unlock_cost(pid)) if dm.has_method("get_unlock_cost") else 200
+			_picker_rows_vbox.add_child(_make_section_label("— Unlock New Creep —"))
+			var lbl2 : String = "🔒 %s %s" % [next_def.get("icon","🧟"), next_def.get("name", next_id)]
+			_creep_catalogue.append({"label":lbl2,"cost":unlock_cost,"kind":"unlock","unlock_id":next_id,
+				"desc":"Permanently unlocks %s for your deck." % next_def.get("name", next_id)})
+			_add_picker_row(_creep_catalogue.size()-1, "🔒", next_def.get("name", next_id), unlock_cost)
+
 		if not _creep_catalogue.is_empty(): return
 
 	# Fallback: use inspector-assigned defend scenes renamed to "Creeps"
@@ -1984,7 +2000,13 @@ func _build_creep_catalogue() -> void:
 	_picker_rows_vbox.add_child(_make_placeholder("No creeps configured — select a deck first"))
 
 func _get_scene_for_id(creep_id: String) -> PackedScene:
-	var id_map := {"zombie":0,"berserker":1,"leaper":2,"shaman":3,"tank":4}
+	# REAL BUG FIX: this id_map didn't match scenes/ui.tscn's real
+	# defend_creep_scenes order (Zombie, Tank, Shaman, Berserker, Leaper,
+	# BOSSMAN) -- everything except "zombie" resolved to the WRONG scene
+	# (e.g. picking "berserker" silently spawned a Tank). Latent until now
+	# since CreepDeckManager was never autoloaded, so this path was never
+	# actually reached in live play.
+	var id_map := {"zombie":0,"tank":1,"shaman":2,"berserker":3,"leaper":4}
 	var idx : int = id_map.get(creep_id, -1) as int
 	if idx >= 0 and idx < defend_creep_scenes.size(): return defend_creep_scenes[idx]
 	if idx >= 0 and idx < attack_creep_scenes.size(): return attack_creep_scenes[idx]
@@ -2025,6 +2047,29 @@ func _picker_select_all() -> void:
 func _picker_confirm_purchase() -> void:
 	if _picker_selected_index < 0: return
 	var entry : Dictionary = _creep_catalogue[_picker_selected_index]
+
+	# Progressive deck-unlock economy row — not a unit spawn at all, spend
+	# gold to permanently add the next creep type to this player's deck.
+	if entry.get("kind", "") == "unlock":
+		if not is_instance_valid(player): return
+		var pid : int = int(player.get("player_id") if "player_id" in player else 0)
+		if NetworkManager.is_networked:
+			var gpc := get_tree().get_first_node_in_group("economy_controller")
+			if is_instance_valid(gpc) and gpc.has_method("rpc_request_unlock_creep"):
+				gpc.rpc_request_unlock_creep.rpc_id(1, _player_team_id, pid, entry["cost"])
+			_show_status("🔒 %s requested…" % entry["label"])
+		else:
+			if not _check_funds(entry["cost"]): return
+			var dm := get_tree().get_first_node_in_group("creep_deck_manager")
+			if is_instance_valid(dm) and dm.has_method("unlock_next"):
+				dm.unlock_next(pid)
+			_show_status("🔓 %s unlocked!" % entry["label"])
+		_picker_selected_index = -1
+		for b in _picker_row_btns: b.button_pressed = false
+		_picker_detail.visible = false; _refresh_picker_gold()
+		_build_creep_catalogue()
+		return
+
 	# Networked: server spawns the creep(s) under PurchaseRelay's
 	# MultiplayerSpawner-watched root and they replicate to every peer.
 	# NOTE: the outside-the-walls repositioning _place_defense_creep_outside_base

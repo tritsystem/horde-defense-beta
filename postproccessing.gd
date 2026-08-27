@@ -12,31 +12,49 @@
 extends WorldEnvironment
 
 ## 0 = Potato  1 = Low  2 = Medium  3 = High (original FPS profile)
-@export_range(0, 3) var quality_tier : int = 1 :
+# DARK-HORROR RESKIN (2026-08-24): bumped default Low(1) -> Medium(2).
+# Tier 2 is still nowhere near the SDFGI+SSIL+volumetric-fog combo that
+# caused this project's documented 200-zombie/~6FPS collapse (see
+# theme_horror/HorrorTheme.gd) -- sdfgi/ssr stay unconditionally false
+# below regardless of tier, and ssil only turns on at tier>=3, which this
+# default does not reach. The only thing tier 2 actually adds over tier 1
+# is real SSAO (already-tuned numbers a few lines down, untouched by this
+# pass) -- a screen-space pass whose cost scales with resolution, not with
+# zombie/scene complexity, and is explicitly called out as a safe/cheap
+# win in this project's own graphics-performance lesson. Not verified
+# against a live 200-zombie framerate (no way to run/play the game from
+# this session) -- flagged in the session's report; revert to 1 here if a
+# real playtest shows a regression.
+@export_range(0, 3) var quality_tier : int = 2 :
 	set(v): quality_tier = v; if is_node_ready(): _apply()
 
 @export_group("Tone Mapping")
 @export var tone_map_mode : int   = Environment.TONE_MAPPER_LINEAR  # FILMIC costs ~0.3ms; LINEAR is free
-@export var exposure      : float = 1.0
+@export var exposure      : float = 0.82   # was 1.0 -- darker exposure, harsher shadow read
 @export var white         : float = 1.0
 
 @export_group("Color Correction")
 ## Adjustment pass is a single fullscreen blit — essentially free. Keep it.
-@export var saturation    : float = 1.25
-@export var contrast      : float = 1.10
-@export var brightness    : float = 0.95
+# DARK-HORROR RESKIN: was a fairly vibrant/bright grade (sat 1.25, low
+# contrast, near-full brightness). Retinted toward a sickly, desaturated,
+# high-contrast Wolfenstein-style grade.
+@export var saturation    : float = 0.55   # was 1.25
+@export var contrast      : float = 1.32   # was 1.10
+@export var brightness    : float = 0.85   # was 0.95
 
 @export_group("Fog")
 @export var fog_enabled       : bool  = true
-@export var fog_density       : float = 0.002
-@export var fog_color         : Color = Color(0.10, 0.12, 0.18)
+@export var fog_density       : float = 0.0035   # was 0.002 -- slightly more atmosphere, still a flat/height fog, not volumetric
+@export var fog_color         : Color = Color(0.17, 0.19, 0.10)   # was a cool blue-grey (0.10,0.12,0.18) -- now sickly olive-green
 @export var fog_height        : float = -4.0
 @export var fog_height_density: float = 0.06
 
 @export_group("Sky")
-@export var sky_color_top     : Color = Color(0.06, 0.07, 0.11)
-@export var sky_color_horizon : Color = Color(0.15, 0.12, 0.17)
-@export var sky_color_bottom  : Color = Color(0.03, 0.03, 0.05)
+# DARK-HORROR RESKIN: was a blue-purple night palette. Retinted to a
+# desaturated near-black sky with a grimy amber-olive horizon glow.
+@export var sky_color_top     : Color = Color(0.045, 0.05, 0.04)
+@export var sky_color_horizon : Color = Color(0.24, 0.19, 0.10)
+@export var sky_color_bottom  : Color = Color(0.03, 0.03, 0.025)
 
 # ── Per-tier settings ─────────────────────────────────────────
 # Bloom, SSAO, SSIL are not exported individually —
@@ -68,9 +86,13 @@ func _apply() -> void:
 
 	# Flat color ambient is cheaper than sky-sampled ambient.
 	# Bake lighting where possible and set this to AMBIENT_SOURCE_COLOR.
+	# DARK-HORROR RESKIN: was a cool blue-grey ambient (0.10,0.11,0.14) at
+	# 0.30 energy -- retinted to a dim, desaturated sickly olive-green and
+	# darkened slightly for deeper shadow contrast against the harsher key
+	# light (see game_phase_script.gd's NIGHT_SUN_ENERGY/NIGHT_SUN_COLOR).
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color  = Color(0.10, 0.11, 0.14)
-	env.ambient_light_energy = 0.30
+	env.ambient_light_color  = Color(0.13, 0.15, 0.09)
+	env.ambient_light_energy = 0.24
 
 	# ── Tone mapping ──────────────────────────────────────────
 	# LINEAR = no extra pass. Switch to FILMIC on tier 3 only.

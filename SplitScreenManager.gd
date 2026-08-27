@@ -34,10 +34,17 @@ func _ready() -> void:
 	add_to_group("splitscreen_manager")
 	# Use a CanvasLayer on root so SubViewportContainers render correctly
 	# regardless of where SSM sits in the scene tree
+	# REAL BUG FIX (2026-08-26): plain add_child() here FAILS with
+	# "Parent node is busy setting up children" whenever this _ready runs
+	# while the root is mid-setup (e.g. main.tscn booted directly) -- the
+	# canvas silently never enters the tree, then EVERY SubViewportContainer
+	# created later is added to a null parent (_make_viewport's known
+	# "add_child on null" line), so the whole HUD/shop lives in an orphaned,
+	# unrendered, unclickable SubViewport. Deferred add is always safe.
 	var canvas := CanvasLayer.new()
 	canvas.name  = "SSM_Canvas"
 	canvas.layer = -100   # behind all UI
-	get_tree().root.add_child(canvas)
+	get_tree().root.add_child.call_deferred(canvas)
 
 	var root_ctrl := Control.new()
 	root_ctrl.name         = "ViewportRoot"

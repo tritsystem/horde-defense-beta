@@ -1,0 +1,11 @@
+Continue the 4-player native multiplayer work on this horde-defense game.
+
+Read MULTIPLAYER_SESSION_HANDOFF.md in this repo root first for full context, then the approved plan at C:\Users\gbran\.claude\plans\reactive-sparking-finch.md.
+
+Status: Phase 1 (peer connection + player replication) and Phase 2 (combat/damage relay) are committed (git log shows them). Phase 3 (server-authoritative economy: team gold in scripts/game_phase_script.gd, personal crystals in player.gd, the shopui.gd purchase-flow restructure, and CreepDeckUI.gd's vote-tally collection) was started but not committed -- verify with `git status` before assuming anything is mid-edit.
+
+Two things should now be available that weren't in the prior session -- confirm they're actually registered before relying on them, don't assume:
+1. The `observe` MCP server (semantic search across indexed projects) -- was wired into this project's config but needed a fresh session to connect.
+2. The `mattpocock-skills` plugin, specifically the `implement` skill (drives implementation from a spec -- use it for Phase 3 onward) and `code-review` (run once a phase is done, before committing). The `tdd` skill's "seam" concept is worth applying even without a formal test framework here: verify at the RPC/public-interface boundary for each new piece (e.g. does a non-authoritative peer's spend-gold request get correctly rejected when funds are insufficient), not by reaching into internals -- one seam, one verification, one minimal implementation at a time, not one giant change.
+
+Continue with Phase 3: implement it one seam at a time (team gold authority first, then crystals, then the shopui.gd async restructure, then the CreepDeckUI.gd vote-tally fix), verify each piece with a headless Godot boot check (Godot exe at C:\Users\gbran\Downloads\Godot_v4.7-stable_win64.exe\Godot_v4.7-stable_win64_console.exe, run with --headless --path . main.tscn --quit-after 2 from the repo directory) before moving to the next, and commit Phase 3 as its own clean commit when done -- matching how Phases 1 and 2 were committed separately from each other and from the large pre-existing-work checkpoint commit before them.
