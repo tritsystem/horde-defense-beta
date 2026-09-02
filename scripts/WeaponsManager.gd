@@ -21,8 +21,27 @@ var _initialized   : bool            = false
 ## height, disconnected from the hands) instead of in its actual hand.
 var third_person_anchor : Node3D = null
 
+# ── First-person viewmodel feel ─────────────────────────────────────
+# Every equipped weapon is slammed to camera_origin + camera_basis * vm_position
+# each frame. These add the polish that sells "1st person": a bob while
+# moving, a slight sway lag behind the look, and a spring recoil on fire.
+const DEFAULT_VM_POS : Vector3 = Vector3(0.3, -0.25, -0.5)   # right / down / forward (view space)
+const DEFAULT_VM_ROT : Vector3 = Vector3(0.0, 180.0, 0.0)
+const DEFAULT_VM_SCALE : Vector3 = Vector3.ONE
+
+var _kick_pos   : Vector3 = Vector3.ZERO   # spring recoil offset (view space)
+var _kick_vel   : Vector3 = Vector3.ZERO
+var _bob_t      : float   = 0.0
+var _sway_basis : Basis   = Basis.IDENTITY
+var _sway_ready : bool     = false
+
 signal weapon_equipped(weapon: Node3D)
 signal weapons_initialized
+
+
+## Poke the viewmodel back + up. Called on every shot (see try_shoot).
+func kick(amount: float = 1.0) -> void:
+	_kick_vel += Vector3(0.0, 0.028, 0.11) * amount
 
 
 func _ready() -> void:
@@ -53,11 +72,38 @@ func _process(_delta: float) -> void:
 		return
 
 	if not is_instance_valid(camera): return
-	var vm_pos : Vector3 = _get_vec(current_weapon, "vm_position", Vector3(0.3, -0.25, -0.5))
-	var cam_t  : Transform3D = camera.global_transform
-	current_weapon.global_position = cam_t.origin + cam_t.basis * vm_pos
-	current_weapon.global_basis    = cam_t.basis * Basis.from_euler(
+	var vm_pos   : Vector3 = _get_vec(current_weapon, "vm_position", DEFAULT_VM_POS)
+	var vm_scale : Vector3 = _get_vec(current_weapon, "vm_scale", DEFAULT_VM_SCALE)
+	var dt : float = get_process_delta_time()
+	var cam_t : Transform3D = camera.global_transform
+
+	# spring the recoil kick back toward zero
+	_kick_vel -= (_kick_pos * 120.0 + _kick_vel * 16.0) * dt
+	_kick_pos += _kick_vel * dt
+
+	# walk bob, scaled by planar speed
+	var spd : float = 0.0
+	if is_instance_valid(player) and player is Node3D:
+		spd = Vector2(player.velocity.x, player.velocity.z).length()
+	_bob_t += dt * (5.0 + spd * 0.8)
+	var bob_amt : float = clampf(spd / 6.0, 0.0, 1.0) * 0.012
+	var bob : Vector3 = Vector3(cos(_bob_t) * bob_amt, -absf(sin(_bob_t)) * bob_amt, 0.0)
+
+	# sway: weapon orientation lags a hair behind the look
+	if not _sway_ready:
+		_sway_basis = cam_t.basis; _sway_ready = true
+	_sway_basis = _sway_basis.slerp(cam_t.basis, clampf(dt * 14.0, 0.0, 1.0)).orthonormalized()
+
+	# Same two-step placement the original used (position, then basis --
+	# which keeps the weapon's own scene scale). vm_scale is applied ONLY
+	# when a weapon opts in with a non-identity value, so default behaviour
+	# is unchanged.
+	var local_off : Vector3 = vm_pos + bob + _kick_pos
+	current_weapon.global_position = cam_t.origin + cam_t.basis * local_off
+	current_weapon.global_basis = _sway_basis * Basis.from_euler(
 		Vector3(deg_to_rad(vm_rot.x), deg_to_rad(vm_rot.y), deg_to_rad(vm_rot.z)))
+	if not vm_scale.is_equal_approx(Vector3.ONE):
+		current_weapon.scale = vm_scale
 
 
 func _get_vec(node: Node3D, prop: String, fallback: Vector3) -> Vector3:
@@ -134,6 +180,8 @@ func _equip(index: int, play_sound: bool = true) -> void:
 
 	_push_refs_to_weapon(current_weapon)
 	_force_show(current_weapon)
+	if not is_instance_valid(third_person_anchor):
+		_apply_viewmodel_render(current_weapon)   # draw on top, no wall clipping
 	_call_safe(current_weapon, "equip", [camera, player])
 
 	print("[WM] Equipped [%d] %s | visible=%s | global_pos=%s | camera=%s" % [
@@ -190,9 +238,30 @@ func equip_by_name(weapon_name: String) -> void:
 	push_warning("[WM] No weapon named '%s'." % weapon_name)
 
 
-func try_shoot()  -> void: _call_safe(current_weapon, "shoot")
+func try_shoot()  -> void:
+	_call_safe(current_weapon, "shoot")
+	var amt : float = 1.0
+	if is_instance_valid(current_weapon) and "vm_kick" in current_weapon:
+		amt = float(current_weapon.get("vm_kick"))
+	kick(amt)
 func try_reload() -> void: _call_safe(current_weapon, "reload")
 func stop_shoot() -> void: _call_safe(current_weapon, "stop_shoot")
+
+
+## Make a viewmodel render over the world (classic FPS "gun on top" look):
+## no shadow + pulled toward the camera in sort order, and -- unless this
+## flag is off -- drawn without depth-testing against world geometry so it
+## never clips into a wall you back up against. Flip to false if a model's
+## own faces sort oddly against each other.
+func _apply_viewmodel_render(w: Node3D) -> void:
+	if not is_instance_valid(w): return
+	# Just the safe polish: no shadow, and sort a touch toward the camera so
+	# the weapon tends to draw in front of nearby world geo.
+	for mi in w.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		if not is_instance_valid(m): continue
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		m.sorting_offset = 1.0
 
 func get_current_weapon() -> Node3D: return current_weapon
 func get_weapon_count()   -> int:    return weapons.size()

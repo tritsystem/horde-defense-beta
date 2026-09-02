@@ -71,6 +71,20 @@ const DECISION_INTERVAL : float = 6.0
 @export var attack_cooldown : float = 1.0
 @export var guard_leash     : float = 30.0   # won't chase further than this from spawn
 
+# ── Companion mode (opt-in) ─────────────────────────────────────────
+## When true, this ally leashes to its team's PLAYER instead of to its
+## spawn point: it follows the player around and engages threats near
+## THEM rather than holding a fixed spot near base. Set by
+## game_phase_script.gd for the guaranteed starter ally so the player
+## always has one teammate that sticks with them and fights alongside.
+@export_group("Companion")
+@export var companion         : bool  = false
+@export var follow_distance   : float = 4.0    # tries to hold roughly this gap
+@export var companion_leash   : float = 24.0   # engages threats within this of the player
+@export var catch_up_distance : float = 15.0   # past this, nav-warp back to the player
+var _leader       : Node3D = null
+var _leader_timer : float  = 0.0
+
 # ── Scout tuning ────────────────────────────────────────────────────
 const SCOUT_REVEAL_RADIUS   : float = 45.0
 const SCOUT_REVEAL_INTERVAL : float = 8.0
@@ -591,6 +605,9 @@ func _physics_process(delta: float) -> void:
 
 	_brain_tick(delta)
 
+	if companion:
+		_resolve_leader(delta)
+
 	match ally_class:
 		AllyClass.BUILDER:
 			_tick_builder(delta)
@@ -676,6 +693,14 @@ var _builder_patrol_idx : int  = 0
 
 func _tick_builder(delta: float) -> void:
 	if _check_self_defense(delta): return
+	if _companion_follow(delta):
+		# still does its economy job below; just follows the player
+		# instead of patrolling base while it isn't fighting
+		_decision_timer -= delta
+		if _decision_timer <= 0.0:
+			_decision_timer = DECISION_INTERVAL
+			_try_spend_gold()
+		return
 	_tick_builder_wander(delta)
 	_decision_timer -= delta
 	if _decision_timer > 0.0: return
@@ -797,6 +822,29 @@ func _tick_guard(delta: float) -> void:
 	_attack_timer -= delta
 	_check_kill_credit()
 	_find_target()
+
+	# SquadArbiter retreat signal (autoload, added 2026-08-26): a squad-
+	# level "hold vs retreat" read combining every living ally's own
+	# Aggro/Caution state, weighted by health-fraction reliability (see
+	# SquadArbiter.gd / decision_arbitrator.gd for the full mechanism).
+	# Guard is the one proactive-combat class (see this file's own header)
+	# so it's the natural place for a squad-level pull-back to actually
+	# change behavior -- Builder/Scout already only fight defensively via
+	# _check_self_defense, so a retreat signal wouldn't change anything
+	# for them anyway. STILL fights back at true self-defense range
+	# (SELF_DEFENSE_RADIUS) rather than running past a threat already on
+	# top of it -- same "don't die for free while doing the safe thing"
+	# reasoning _check_self_defense itself uses for Builder/Scout.
+	var squad_retreating := false
+	var director := get_node_or_null("/root/SquadArbiter")
+	if is_instance_valid(director) and director.has_method("get_should_retreat"):
+		squad_retreating = director.get_should_retreat()
+
+	if squad_retreating and is_instance_valid(_target):
+		var target_dist : float = global_position.distance_to(_target.global_position)
+		if target_dist > SELF_DEFENSE_RADIUS:
+			_target = null   # disengage -- falls through to the return-to-spawn branch below
+
 	if is_instance_valid(_target):
 		var dist := global_position.distance_to(_target.global_position)
 		if dist <= attack_range:
@@ -813,12 +861,15 @@ func _tick_guard(delta: float) -> void:
 			_seek(_target.global_position)
 			_face(_target.global_position)
 			_update_stuck(delta)
-	else:
-		# Return toward spawn/base rather than wandering off
-		var to_home := _spawn_pos - global_position; to_home.y = 0.0
+	elif not _companion_follow(delta):
+		# No threat and not chasing the player -- return toward home
+		# (the player in companion mode, else spawn/base) rather than
+		# wandering off.
+		var home : Vector3 = _home_anchor()
+		var to_home := home - global_position; to_home.y = 0.0
 		if to_home.length() > 2.0:
-			_seek(_spawn_pos)
-			_face(_spawn_pos)
+			_seek(home)
+			_face(home)
 			_update_stuck(delta)
 		else:
 			velocity.x = move_toward(velocity.x, 0.0, move_speed * delta * 4.0)
@@ -1003,12 +1054,87 @@ func _unstuck() -> void:
 		velocity.y = 4.0
 
 
+# ── Companion helpers ───────────────────────────────────────────────
+## Null-safe "is this node dead?" -- `"is_dead" in n` is also true for a
+## method, and n.get() then returns null (bool(null) would throw).
+func _node_is_dead(n: Object) -> bool:
+	if not is_instance_valid(n):
+		return true
+	if n.get("is_dead") == true:
+		return true
+	if n.has_method("is_dead") and n.call("is_dead") == true:
+		return true
+	return false
+
+
+## Leader = nearest live player body on this ally's team. Re-resolved on a
+## slow timer, not per tick, so a respawned/other player is still picked up
+## without a group scan every frame.
+func _resolve_leader(delta: float) -> void:
+	_leader_timer -= delta
+	var leader_ok : bool = is_instance_valid(_leader) and not _node_is_dead(_leader)
+	if leader_ok and _leader_timer > 0.0:
+		return
+	_leader_timer = 1.0
+	var best : Node3D = null
+	var best_d := INF
+	for p in get_tree().get_nodes_in_group("player"):
+		if not is_instance_valid(p) or not (p is Node3D): continue
+		if "team_id" in p and int(p.get("team_id")) != team_id: continue
+		if _node_is_dead(p): continue
+		var d : float = global_position.distance_to((p as Node3D).global_position)
+		if d < best_d:
+			best_d = d; best = p as Node3D
+	if is_instance_valid(best):
+		_leader = best
+
+
+## Where this ally "holds" and what radius it defends -- the player when in
+## companion mode, otherwise its spawn point (unchanged classic behavior).
+func _home_anchor() -> Vector3:
+	return _leader.global_position if (companion and is_instance_valid(_leader)) else _spawn_pos
+
+func _home_leash() -> float:
+	return companion_leash if companion else guard_leash
+
+
+## Move toward the leader, stopping ~follow_distance away. Nav-warps (same
+## nav-clamped hop _unstuck uses, so it never lands in geometry) if the ally
+## has fallen catch_up_distance behind. Returns true only when it actually
+## drove movement this tick; false when already close enough, so the caller
+## resumes its normal in-range/idle logic.
+func _companion_follow(delta: float) -> bool:
+	if not companion or not is_instance_valid(_leader):
+		return false
+	var to_leader := _leader.global_position - global_position
+	to_leader.y = 0.0
+	var gap := to_leader.length()
+	if gap > catch_up_distance:
+		var behind : Vector3 = _leader.global_position - to_leader.normalized() * follow_distance
+		var nav_map : RID = get_world_3d().navigation_map
+		if nav_map != RID():
+			var snapped : Vector3 = NavigationServer3D.map_get_closest_point(nav_map, behind)
+			global_position = snapped if snapped.distance_to(behind) < 3.0 else behind
+		else:
+			global_position = behind
+		velocity = Vector3.ZERO
+		return true
+	if gap > follow_distance * 1.5:
+		_seek(_leader.global_position)
+		_face(_leader.global_position)
+		_update_stuck(delta)
+		return true
+	return false
+
+
 func _find_target() -> void:
-	var search_radius : float = maxf(attack_range, guard_leash)
+	var home : Vector3 = _home_anchor()
+	var leash : float  = _home_leash()
+	var search_radius : float = maxf(attack_range, leash)
 	if is_instance_valid(_target):
 		if ("is_dead" in _target and _target.get("is_dead")) \
 				or global_position.distance_to(_target.global_position) > search_radius \
-				or _spawn_pos.distance_to(_target.global_position) > guard_leash:
+				or home.distance_to(_target.global_position) > leash:
 			_target = null
 	if is_instance_valid(_target): return
 	var best : Node3D = null
@@ -1017,7 +1143,7 @@ func _find_target() -> void:
 		if not is_instance_valid(z) or not (z is Node3D): continue
 		if "team_id" in z and int(z.get("team_id")) == team_id: continue
 		if "is_dead" in z and z.get("is_dead"): continue
-		if _spawn_pos.distance_to((z as Node3D).global_position) > guard_leash: continue
+		if home.distance_to((z as Node3D).global_position) > leash: continue
 		var d := global_position.distance_to((z as Node3D).global_position)
 		if d < best_d:
 			best_d = d; best = z as Node3D
@@ -1097,6 +1223,7 @@ func _die() -> void:
 func _tick_scout(delta: float) -> void:
 	velocity.x = 0.0; velocity.z = 0.0
 	if _check_self_defense(delta): return
+	_companion_follow(delta)   # keep near the player if flagged as companion
 	_decision_timer -= delta
 	if _decision_timer > 0.0: return
 	_decision_timer = SCOUT_REVEAL_INTERVAL

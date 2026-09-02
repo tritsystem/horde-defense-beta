@@ -1141,7 +1141,12 @@ func _commandable_by_team(team_id: int) -> Array:
 			if not is_instance_valid(u) or not (u is Node3D): continue
 			if seen.has(u): continue
 			if not ("team_id" in u) or int(u.get("team_id")) != team_id: continue
-			if "is_dead" in u and bool(u.get("is_dead")): continue
+			# `"is_dead" in u` is true for a METHOD too, and u.get() then returns
+			# null -> bool(null) throws "Nonexistent 'bool' constructor". Read the
+			# property truthily (null is falsy), and honour an is_dead() method.
+			var dead : bool = (u.get("is_dead") == true)
+			if not dead and u.has_method("is_dead"): dead = (u.call("is_dead") == true)
+			if dead: continue
 			seen[u] = true
 			result.append(u)
 	return result

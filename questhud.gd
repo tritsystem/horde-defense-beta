@@ -5,6 +5,8 @@
 # ============================================================
 extends Control
 
+const DraggableHudPanel := preload("res://scripts/DraggableHudPanel.gd")
+
 var _player_id     : int  = 0
 var _quest_mgr     : Node = null
 var _quest_rows    : Array = []
@@ -49,6 +51,10 @@ func _ready() -> void:
 		_quest_mgr.quest_progress.connect(_on_progress)
 		_quest_mgr.quest_completed.connect(_on_completed)
 		_quest_mgr.new_quest_available.connect(_on_new_quests)
+
+	# Player-movable / resizable in HUD edit mode (F8). Persists to
+	# user://hud_layout.cfg via the HudLayout autoload.
+	DraggableHudPanel.attach(self, "quests")
 
 
 # ── Toggle visibility with J key ─────────────────────────────

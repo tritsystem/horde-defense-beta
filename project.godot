@@ -53,8 +53,10 @@ CombatRelay="*res://scripts/net/CombatRelay.gd"
 PurchaseRelay="*res://scripts/net/PurchaseRelay.gd"
 CreepDeckManager="*res://Creepdeckmanager.gd"
 AIDirector="*res://AIDirector.gd"
+SquadArbiter="*res://SquadArbiter.gd"
 HordeLLM="*res://HordeLLM.gd"
 VoiceboxTTS="*res://VoiceboxTTS.gd"
+HudLayout="*res://scripts/HudLayout.gd"
 
 [global_group]
 

@@ -11,6 +11,13 @@ class_name Flamethrower
 @export var recoil                    : float = 2.0
 @export var projectile_scene          : PackedScene = null
 
+@export_group("Viewmodel")
+@export var vm_position : Vector3 = Vector3(0.3, -0.25, -0.5)
+@export var vm_rotation : Vector3 = Vector3(0.0, 180.0, 0.0)
+@export var vm_scale    : Vector3 = Vector3.ONE
+@export var vm_kick     : float   = 0.25
+@export_group("")
+
 @export var shoot_sound               : AudioStream = null
 @export var shoot_volume_db           : float = 0.0
 @export var shoot_pitch_scale         : float = 1.0

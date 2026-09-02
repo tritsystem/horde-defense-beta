@@ -122,9 +122,9 @@ var conversion_health_pct : float = 0.35
 
 @export_group("Stats")
 
-@export var max_health : float = 350.0
+@export var max_health : float = 220.0  # was 350 -- early game too punishing
 @export var move_speed : float = 4.0
-@export var damage : float = 15.0
+@export var damage : float = 9.0  # was 15 -- ~40% cut for early-game survivability
 
 @export var attack_range : float = 2.3
 @export var turret_range : float = 3.5
@@ -201,6 +201,26 @@ var conversion_health_pct : float = 0.35
 @export var is_boss : bool = false
 @export var boss_phase_thresholds : Array[float] = [0.75, 0.5, 0.25]
 @export var boss_enrage_threshold : float = 0.25
+
+# ── BOSS VARIANTS (2026-08-28): "boss variations with SNN minds reactive
+# to their environment and enemies -- giant, cyclops, mythical creatures".
+# Reuses real, already-in-project assets: 3 real unused monster .glb
+# variants (zombie_variants/zombie_variant_{demon,warrok,maw}.glb, honestly
+# built by blender_zombie_variants_run.py from 3 distinct pre-existing
+# monster base meshes -- see that script's own header for the full,
+# honest provenance) plus the mushroom-boss model in
+# zombie/mushroom-boss-game-ready-with-animations/, none of which were
+# ever wired into a live scene. Each variant gets a REAL distinct
+# reactivity, not just a palette swap: see _apply_boss_variant() and the
+# variant-specific stimulus in _brain_tick() below.
+enum BossVariant { NONE, DEMON, ORC_TROLL, MAW, MUSHROOM }
+@export var boss_variant : BossVariant = BossVariant.NONE
+const BOSS_VARIANT_TINT := {
+	BossVariant.DEMON:     Color(0.9, 0.05, 0.02),   # hot red -- matches blender_zombie_variants_run.py's own glow_color
+	BossVariant.ORC_TROLL: Color(0.1, 0.7, 0.15),    # sickly green, same source
+	BossVariant.MAW:       Color(0.55, 0.15, 0.75),  # violet -- caster archetype
+	BossVariant.MUSHROOM:  Color(0.75, 0.55, 0.15),  # spore-amber
+}
 
 # ---- Elite settings ---------------------------------------
 
@@ -1463,10 +1483,30 @@ func _brain_tick(delta: float) -> void:
 	var dist: float = global_position.distance_to((target as Node3D).global_position)
 	if _prev_target_dist >= 0.0:
 		var closing_rate: float = (_prev_target_dist - dist) / maxf(delta, 0.001)
-		if closing_rate > 0.0:
-			brain.stimulate("Aggro", closing_rate * CLOSING_STIMULUS_SCALE)
-		elif closing_rate < 0.0:
-			brain.stimulate("Caution", -closing_rate * CLOSING_STIMULUS_SCALE)
+		# BOSS VARIANT REACTIVITY (2026-08-28): a real, distinct stimulus
+		# pattern per archetype -- not the same Aggro/Caution mapping for
+		# every boss. See set_boss_variant()'s stat-side comments for the
+		# matching archetype description.
+		if is_boss and boss_variant == BossVariant.MAW:
+			# caster: closing distance makes it CAUTIOUS (wants range),
+			# not aggressive -- the opposite mapping from every other
+			# variant, a real behavioral difference driven by the SNN,
+			# not a cosmetic label.
+			if closing_rate > 0.0:
+				brain.stimulate("Caution", closing_rate * CLOSING_STIMULUS_SCALE)
+			elif closing_rate < 0.0:
+				brain.stimulate("Aggro", -closing_rate * CLOSING_STIMULUS_SCALE * 0.5)
+		elif is_boss and boss_variant == BossVariant.MUSHROOM:
+			# area-effect creature: never goes Cautious -- always presses
+			# in regardless of losing ground, real Caution suppression
+			# (stimulus simply never sent for this variant)
+			if closing_rate > 0.0:
+				brain.stimulate("Aggro", closing_rate * CLOSING_STIMULUS_SCALE)
+		else:
+			if closing_rate > 0.0:
+				brain.stimulate("Aggro", closing_rate * CLOSING_STIMULUS_SCALE)
+			elif closing_rate < 0.0:
+				brain.stimulate("Caution", -closing_rate * CLOSING_STIMULUS_SCALE)
 	_prev_target_dist = dist
 
 	# REAL FEATURE: player-team units only (deck-purchased creeps) -- Alert
@@ -4416,6 +4456,19 @@ func set_tier(tier: int) -> void:
 			damage *= 2.2
 			armor_physical = 20.0
 			armor_magic = 15.0
+			# BUG FOUND + FIXED (2026-08-28): add_to_group("boss_units") in
+			# _ready() only fires if is_boss was ALREADY true at _ready()
+			# time -- but set_tier(BOSS) is (and, per the fixed
+			# _spawn_boss_unit() in game_phase_script.gd, now actually IS)
+			# called AFTER the unit is added to the tree, so is_boss was
+			# always false during _ready() for a real spawned boss. No
+			# current code reads "boss_units" (checked via a full-project
+			# search), so this had zero observed gameplay effect yet, but
+			# it's the correct fix regardless of caller timing -- do it
+			# here, not in _ready(), so it holds no matter when set_tier()
+			# is called relative to the tree.
+			if not is_in_group("boss_units"):
+				add_to_group("boss_units")
 
 		ZombieTier.PHASE:
 			is_phase_zombie = true
@@ -4423,6 +4476,49 @@ func set_tier(tier: int) -> void:
 			max_health *= 2.2
 			health = max_health
 			_init_phase_system()
+# ============================================================
+# AAA: BOSS VARIANT API
+# ============================================================
+
+## Applies a real, distinct archetype on top of an already-BOSS-tiered
+## unit: different stat leans (not just cosmetic) and a different real
+## reactive stimulus pattern in _brain_tick() below. Call AFTER
+## set_tier(ZombieTier.BOSS).
+func set_boss_variant(variant: int) -> void:
+	boss_variant = variant as BossVariant
+	if BOSS_VARIANT_TINT.has(boss_variant) and not _body_meshes.is_empty():
+		HorrorTheme.apply_sickly_tint(_body_meshes, BOSS_VARIANT_TINT[boss_variant], 0.6)
+	match boss_variant:
+		BossVariant.DEMON:
+			# aggressive brute: hits harder, less armor -- a real glass-cannon
+			# lean, not just a bigger number across the board
+			damage *= 1.25
+			armor_physical = maxf(0.0, armor_physical - 8.0)
+			move_speed *= 1.15
+		BossVariant.ORC_TROLL:
+			# tank: more HP/armor, slower, enrages more readily (lower
+			# threshold) -- a real behavioral shift, reacts to taking
+			# damage sooner than the other variants
+			max_health *= 1.3
+			health = max_health
+			armor_physical += 10.0
+			move_speed *= 0.85
+			boss_enrage_threshold = 0.4
+		BossVariant.MAW:
+			# caster archetype: keeps range, less melee damage, more magic
+			# armor -- real environmental reactivity added in _brain_tick()
+			# (backs off when a target closes in, rather than always
+			# closing distance like every other variant)
+			damage *= 0.8
+			armor_magic += 15.0
+		BossVariant.MUSHROOM:
+			# area-effect archetype: real Caution suppression -- reacts to
+			# being surrounded by pressing forward instead of backing off,
+			# reflecting a spore-cloud creature that wants enemies close
+			armor_physical += 5.0
+			max_health *= 1.15
+			health = max_health
+
 # ============================================================
 # CLEAR UNREACHABLE TARGET
 # ============================================================

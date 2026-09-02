@@ -1910,7 +1910,7 @@ shoot_sound = ExtResource("37_pusvq")
 reload_sound = ExtResource("38_qduiv")
 
 [node name="ak48" type="Node3D" parent="CameraRoot/FPSPivot/Camera3D/WeaponsManager/BaseGun" unique_id=1529805210]
-transform = Transform3D(-14.661368, -1.6392733e-07, 5.0295057e-10, 5.1559255e-09, -5.662441e-07, 13.115498, 4.4703484e-08, -8.4977, -1.0430813e-07, 0.07908032, 1.0998913, 0.015358388)
+transform = Transform3D(-14.661368, -1.6392733e-07, 5.0295057e-10, 5.1559255e-09, -5.662441e-07, 13.115498, 4.4703484e-08, -8.4977, -1.0430813e-07, 0, 0, 0)
 
 [node name="Skeleton3D" type="Skeleton3D" parent="CameraRoot/FPSPivot/Camera3D/WeaponsManager/BaseGun/ak48" unique_id=877188533]
 bones/0/name = "root"

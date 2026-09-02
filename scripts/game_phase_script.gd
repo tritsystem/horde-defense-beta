@@ -571,12 +571,69 @@ func _spawn_horde(team: int, count: int) -> void:
 
 
 func _spawn_boss_unit(team: int) -> void:
-	var ls := get_tree().get_first_node_in_group("lane_spawner")
-	if is_instance_valid(ls) and ls.has_method("spawn_boss"):
-		ls.spawn_boss(team, _current_round)
-	else:
-		# Fallback: spawn a heavily buffed tank as the boss
-		_spawn_horde(team, 1)
+	# BUG FOUND + FIXED (2026-08-28): this always fell through to the
+	# fallback below -- no script anywhere adds itself to group
+	# "lane_spawner" (confirmed via a full-project search), so
+	# get_first_node_in_group("lane_spawner") is always null and
+	# spawn_boss() (also confirmed to not exist ANYWHERE in the codebase)
+	# was never reachable. Every "BOSS ROUND" in real play was silently
+	# just _spawn_horde(team, 1) -- one single ORDINARY zombie via the
+	# pooled hive path, no tier, no phases, no enrage, nothing "boss"
+	# about it at all. The real, working boss system (zombie.gd's
+	# set_tier(ZombieTier.BOSS): 4x HP, phases, enrage -- see
+	# _tick_boss_checks()/_on_boss_phase_start()) existed as fully
+	# functional code that had never actually been called.
+	#
+	# Real fix: spawn a full scripted zombie.tscn instance (not the
+	# pooled/multimesh path _spawn_horde uses, which has no way to carry
+	# per-unit tier state) via ZombieHordeManager.spawn_from_scene(), then
+	# call the REAL set_tier(BOSS) on it. Falls back to the old dummy
+	# behavior only if ZHM or the boss scene are genuinely unavailable.
+	var zhm := get_tree().get_first_node_in_group("zombie_horde_manager")
+	if zhm == null:
+		zhm = get_tree().root.find_child("ZombieHordeManager", true, false)
+	var boss_scene: PackedScene = load("res://zombie/zombie.tscn") if ResourceLoader.exists("res://zombie/zombie.tscn") else null
+	if zhm != null and zhm.has_method("spawn_from_scene") and boss_scene != null:
+		var pos := _find_boss_spawn_pos()
+		var boss: Node = zhm.spawn_from_scene(boss_scene, pos, team)
+		if boss != null and boss.has_method("set_tier"):
+			# ZombieTier.BOSS == 2, see the enum in zombie.gd -- avoid a
+			# cross-script const reference (script isn't preloaded here),
+			# same numeric-literal convention _current_round math already
+			# uses elsewhere in this file.
+			boss.call("set_tier", 2)
+			# BOSS VARIANTS (2026-08-28): "boss variations... giant,
+			# cyclops, mythical creatures" -- cycle through the 4 real
+			# archetypes (BossVariant enum in zombie.gd: 1=DEMON,
+			# 2=ORC_TROLL, 3=MAW, 4=MUSHROOM) by boss-round count, so
+			# different boss rounds bring a genuinely different reactive
+			# creature, not the same boss reskinned.
+			if boss.has_method("set_boss_variant"):
+				var boss_round_num := _current_round / BOSS_EVERY
+				var variant_idx := 1 + (boss_round_num % 4)   # cycles 1..4
+				boss.call("set_boss_variant", variant_idx)
+			print("💀 Real BOSS unit spawned (tier=BOSS) at round %d" % _current_round)
+			return
+		elif boss != null:
+			push_warning("[GamePhase] boss scene spawned but has no set_tier() -- spawned as a plain unit")
+			return
+	push_warning("[GamePhase] _spawn_boss_unit: ZombieHordeManager/boss scene unavailable -- falling back to a single plain zombie")
+	_spawn_horde(team, 1)
+
+## Real spawn position for a boss unit: prefer a live active hive (same
+## source _spawn_horde's hive path already uses), fall back to the
+## nearest player's position offset if no hive is active.
+func _find_boss_spawn_pos() -> Vector3:
+	for hive in get_tree().get_nodes_in_group("hive_clusters"):
+		if not is_instance_valid(hive): continue
+		if "is_dead" in hive and bool(hive.get("is_dead")): continue
+		if "is_active" in hive and not bool(hive.get("is_active")): continue
+		if hive is Node3D:
+			return (hive as Node3D).global_position
+	var players := get_tree().get_nodes_in_group("players")
+	if players.size() > 0 and players[0] is Node3D:
+		return (players[0] as Node3D).global_position + Vector3(0, 0, -20)
+	return Vector3.ZERO
 
 
 func _deploy_player_units_for_wave(wave_num: int) -> void:
@@ -1422,7 +1479,11 @@ func _reset_legacy_spawners() -> void:
 
 
 func _spawn_starting_turrets() -> void:
-	var scene_path := "res://scenes/fire_turret.tscn"
+	# Start with the plain machine-gun turret, not the flamethrower -- flame
+	# turrets are a shop/upgrade choice, not a freebie at round 1.
+	var scene_path := "res://scenes/turret.tscn"
+	if not ResourceLoader.exists(scene_path):
+		scene_path = "res://scenes/base_turret.tscn"
 	if not ResourceLoader.exists(scene_path): return
 	var packed : PackedScene = load(scene_path)
 	if not is_instance_valid(packed): return
@@ -1475,10 +1536,14 @@ func _ensure_team_ally_presence() -> void:
 	if not ResourceLoader.exists(TEAM_ALLY_SCRIPT): return
 	for a in get_tree().get_nodes_in_group("team_allies"):
 		if is_instance_valid(a) and "team_id" in a and int(a.get("team_id")) == 1 \
-				and "ally_class" in a and int(a.get("ally_class")) == 0:  # AllyClass.BUILDER
-			return   # a starter Builder already exists
-	_spawn_team_ally(1, 0, Vector3.ZERO, false, false)   # team 1, BUILDER, near base, not trapped
-	print("[GamePhase] Spawned starter Builder ally")
+				and a.get("companion") == true:
+			return   # the player's companion ally already exists
+	# GUARD class + companion=true: it follows the player and actively
+	# fights threats near THEM instead of holding near base. (Flip the 1
+	# back to 0 here for the old economy-Builder starter.)
+	var ally := _spawn_team_ally(1, 1, Vector3.ZERO, false, false, true)
+	if is_instance_valid(ally):
+		print("[GamePhase] Spawned player companion ally (Guard, follows player)")
 
 
 ## Shared spawn helper -- also used by HiveCluster.gd for the
@@ -1486,7 +1551,7 @@ func _ensure_team_ally_presence() -> void:
 ## lets that caller place it at the hive's position instead of near the
 ## base; a bool flag rather than a Vector3.ZERO sentinel since a hive could
 ## legitimately end up placed near world origin).
-func _spawn_team_ally(team: int, ally_class_int: int, spawn_pos_override: Vector3, use_override_pos: bool, trapped: bool) -> Node:
+func _spawn_team_ally(team: int, ally_class_int: int, spawn_pos_override: Vector3, use_override_pos: bool, trapped: bool, companion: bool = false) -> Node:
 	var script : Script = load(TEAM_ALLY_SCRIPT)
 	if not is_instance_valid(script): return null
 
@@ -1512,6 +1577,7 @@ func _spawn_team_ally(team: int, ally_class_int: int, spawn_pos_override: Vector
 	ally.team_id = team
 	ally.ally_class = ally_class_int
 	ally.trapped = trapped
+	ally.companion = companion
 	get_tree().current_scene.add_child(ally)
 	ally.global_position = spawn
 	return ally

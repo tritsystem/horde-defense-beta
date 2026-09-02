@@ -145,6 +145,9 @@ const ANIM_JUMP       := "parameters/jump/request"
 const ANIM_DEATH      := "parameters/death/request"
 const ANIM_SHOOT_FILT := "parameters/shot/request"
 
+const PlayerSkins := preload("res://scripts/PlayerSkins.gd")
+var _skin_variant : int = 0   # 0 = Ch15 body, 1 = Ch35 body (cycled with K)
+
 enum CameraMode { FPS, TOPDOWN }
 var current_mode : CameraMode = CameraMode.FPS
 var topdown_mode : bool = false
@@ -306,7 +309,16 @@ func _ready() -> void:
 	_deck_open = false
 	print("=== PLAYER.GD v7 LOADED — if you don't see this, wrong file ===")
 	if not is_ai_puppet:
-		call_deferred("_show_class_select")
+		if multiplayer.has_multiplayer_peer():
+			# NETWORKED: every client holds a Player node for EVERY peer.
+			# Only the client that OWNS this player may open class-select /
+			# deck UI -- otherwise player 1 gets P2/P3/P4's screens stacked
+			# on top of their own and can't confirm anything. Authority may
+			# not be assigned yet at _ready() (NetPlayerSpawner sends it by
+			# RPC), so wait for it first.
+			_start_local_ui_when_owned.call_deferred()
+		else:
+			call_deferred("_show_class_select")
 	add_to_group("player")
 	add_to_group("players")
 	add_to_group("units")
@@ -437,7 +449,24 @@ func _bind_weapon_manager() -> void:
 		push_error("[Player] WeaponsManager NOT FOUND — check scene tree")
 
 
+## NETWORKED only: wait until this client knows whether it owns this player,
+## then start the local-only pre-match UI (class select -> deck). A remote
+## player's node on our client returns without opening anything.
+func _start_local_ui_when_owned() -> void:
+	var waited : float = 0.0
+	while waited < 8.0 and not is_multiplayer_authority():
+		await get_tree().create_timer(0.15).timeout
+		if not is_instance_valid(self):
+			return
+		waited += 0.15
+	if not is_multiplayer_authority():
+		return
+	_show_class_select()
+
+
 func _show_class_select() -> void:
+	if _is_remote_puppet():
+		return   # not our player -- see _start_local_ui_when_owned
 	# If a run save already recorded a class for this player, restore it directly
 	var _rsm_cs := get_node_or_null("/root/RunSaveManager")
 	if is_instance_valid(_rsm_cs) and _rsm_cs.has_save():
@@ -535,6 +564,8 @@ func _on_class_chosen(class_id: int) -> void:
 
 
 func _show_deck_ui() -> void:
+	if _is_remote_puppet():
+		return   # not our player -- only the owning client picks a deck
 	if _deck_open: return
 	await get_tree().process_frame
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -878,6 +909,15 @@ func _input(event: InputEvent) -> void:
 					var wep : Node = weapon_manager.get_current_weapon()
 					if is_instance_valid(wep) and wep.has_method("swing"):
 						wep.swing(); did_swing = true
+				if did_swing and is_instance_valid(animation_tree):
+					# Placeholder swing motion -- reuses the shoot one-shot
+					# (upper-body). Replace with a dedicated melee_shot node
+					# + a slash clip in the AnimationTree for a real swing.
+					animation_tree.set(ANIM_SHOOT, AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
+			KEY_K:
+				# Cycle body-shape variant (Ch15 <-> Ch35) and reapply the tint.
+				_skin_variant = PlayerSkins.set_body_variant(self, _skin_variant + 1)
+				PlayerSkins.apply(self, int(player_class))
 			KEY_G:
 				if not _is_wave_panel_open():
 					_enchant_nearby_zombies()
@@ -3117,6 +3157,7 @@ func set_player_class(c: PlayerClass) -> void:
 		PlayerClass.DOOMSLAYER:   _class_cd_max = [10.0, 20.0, 90.0,  8.0]
 		_:                        _class_cd_max = [10.0, 20.0, 40.0, 10.0]
 	_show_message("⚔ Class: %s" % CLASS_NAMES[c], Color(1.0, 0.8, 0.1))
+	call_deferred("_apply_class_look")
 	var _rsm_cls := get_node_or_null("/root/RunSaveManager")
 	if is_instance_valid(_rsm_cls): _rsm_cls.set_player_class(player_id, int(c))
 	var _sw : Array = CLASS_SWAY.get(c, CLASS_SWAY[PlayerClass.NONE])
@@ -3125,6 +3166,14 @@ func set_player_class(c: PlayerClass) -> void:
 	sway_amount    = _sw[2]
 	tilt_amount    = _sw[3]
 	_update_ult_hud()
+
+
+# Per-class body recolour (keeps the Mixamo texture, lays a class tint +
+# emission + rim over it). Body is only visible in third person / to
+# team-mates, but the ally puppet shares this rig so it shows there too.
+func _apply_class_look() -> void:
+	PlayerSkins.apply(self, int(player_class))
+	PlayerSkins.set_body_variant(self, _skin_variant)
 
 
 # ============================================================

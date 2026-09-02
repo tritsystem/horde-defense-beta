@@ -67,6 +67,8 @@ var _class_ab_sweep_rects  : Array[ColorRect] = []
 var _last_player_class : int               = -1   # dirty check for name/desc update
 var _class_ability_bar : HBoxContainer     = null  # shared bar for class + trinket slots
 var _minimap_draw     : Control            = null
+const DraggableHudPanel := preload("res://scripts/DraggableHudPanel.gd")
+
 const CLASS_AB_KEYS   := ["1", "2", "3", "4"]
 const CLASS_AB_COLORS := [Color(1.0,0.65,0.1), Color(0.35,0.75,1.0), Color(0.55,1.0,0.4), Color(1.0,0.4,0.8)]
 
@@ -740,6 +742,9 @@ func _build_top_left() -> void:
 	base_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	base_row.add_child(base_label)
 
+	frame.name = "UnitFrame"
+	DraggableHudPanel.attach(frame, "unit_frame")
+
 
 # ─────────────────────────────────────────────────────────────
 # TOP CENTER — phase / timer / gold / zombie count
@@ -795,6 +800,9 @@ func _build_top_center() -> void:
 	zombies_label = _badge_label("🧟 0", C_DIM)
 	zombies_label.add_theme_font_size_override("font_size", 12)
 	row.add_child(zombies_label)
+
+	strip.name = "TopCenterStrip"
+	DraggableHudPanel.attach(strip, "top_center")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1496,11 +1504,14 @@ func _build_crystal_hud() -> void:
 	_crystal_lbl.add_theme_color_override("font_color", Color(0.75, 0.4, 1.0))
 	_crystal_lbl.anchor_left   = 0.0; _crystal_lbl.anchor_right  = 0.2
 	_crystal_lbl.anchor_top    = 0.0; _crystal_lbl.anchor_bottom = 0.0
-	_crystal_lbl.offset_left   = 10;  _crystal_lbl.offset_top    = 48
-	_crystal_lbl.offset_bottom = 72
+	# Sit clear below the top-left unit frame (that frame ends at offset_bottom
+	# 88) -- it used to be drawn at y=48 which layered it over the base-HP bar.
+	_crystal_lbl.offset_left   = 10;  _crystal_lbl.offset_top    = 96
+	_crystal_lbl.offset_bottom = 120
 	_crystal_lbl.mouse_filter  = Control.MOUSE_FILTER_IGNORE
 	_crystal_lbl.z_index       = 200
 	add_child(_crystal_lbl)
+	DraggableHudPanel.attach(_crystal_lbl, "crystals")
 	# Flash overlay on pickup
 	_crystal_flash = ColorRect.new()
 	_crystal_flash.color = Color(0.6, 0.2, 1.0, 0.0)
@@ -4308,10 +4319,13 @@ func _turret_reposition() -> void:
 	psz.x = maxf(psz.x, 220.0)
 	psz.y = maxf(psz.y, 120.0)
 	_turret_hover.size = psz   # force size before clamping position
-	_turret_hover.position = Vector2(
-		clampf(sp.x - psz.x * 0.5, 4.0, vps.x - psz.x - 4.0),
-		clampf(sp.y - psz.y - 6.0, 4.0, vps.y - psz.y - 4.0)
-	)
+	var px : float = clampf(sp.x - psz.x * 0.5, 4.0, vps.x - psz.x - 4.0)
+	var py : float = clampf(sp.y - psz.y - 6.0, 4.0, vps.y - psz.y - 4.0)
+	# Keep it off the top-left unit frame (player HP + base HP, ~x<0.24 vpw,
+	# y<96). If the panel would land there, drop it just below the frame.
+	if px < vps.x * 0.24 and py < 96.0:
+		py = 100.0
+	_turret_hover.position = Vector2(px, py)
 
 
 func _turret_do_upgrade() -> void:

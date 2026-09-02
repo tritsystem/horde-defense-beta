@@ -230,6 +230,16 @@ func _build_main_panel() -> Control:
 	vs_desc.add_theme_color_override("font_color", Color(0.75, 0.40, 0.35))
 	btns.add_child(vs_desc)
 
+	var mp_btn := _make_button("🌐   MULTIPLAYER  (ONLINE CO-OP)", Color(0.12, 0.30, 0.44))
+	mp_btn.pressed.connect(_open_multiplayer)
+	btns.add_child(mp_btn)
+
+	var mp_desc := Label.new()
+	mp_desc.text = "Host or join by IP  ·  up to 4 players share one base  ·  LAN or port-forwarded internet"
+	mp_desc.add_theme_font_size_override("font_size", 11)
+	mp_desc.add_theme_color_override("font_color", Color(0.45, 0.64, 0.80))
+	btns.add_child(mp_desc)
+
 	btns.add_child(_hsep(Color(0.3, 0.3, 0.35, 0.5)))
 
 	var settings_btn := _make_button("⚙   SETTINGS", Color(0.18, 0.18, 0.2))
@@ -632,6 +642,16 @@ func _close_settings() -> void:
 	var tw := create_tween()
 	tw.tween_property(_settings_panel, "modulate:a", 0.0, 0.15)
 	tw.tween_callback(func(): _settings_panel.visible = false)
+
+func _open_multiplayer() -> void:
+	# Online co-op lobby (Host / Join by IP). Its own scene -- Scenesetup.gd
+	# skips game setup for "lobby" scenes, and the lobby's own "Start Match"
+	# loads main.tscn on every peer via NetworkManager.rpc_load_match().
+	if ResourceLoader.exists("res://scenes/lobby.tscn"):
+		get_tree().change_scene_to_file("res://scenes/lobby.tscn")
+	else:
+		push_error("[MainMenu] scenes/lobby.tscn missing")
+
 
 func _open_orig() -> void:
 	_orig_panel_open = true

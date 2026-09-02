@@ -29,19 +29,24 @@ func _ready() -> void:
 
 func _build() -> void:
 	_panel = Control.new()
-	_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_panel)
 
 	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bg.color = Color(0.0, 0.0, 0.0, 0.88)
 	_panel.add_child(bg)
 
+	# Full-width column, vertically inset 10%..90%. PRESET_CENTER left the
+	# left/right anchors at 0.5 (a zero-width column at screen centre) which
+	# pushed the wide stat/button rows off to the right and stopped it scaling.
 	var vbox := VBoxContainer.new()
-	vbox.set_anchors_preset(Control.PRESET_CENTER)
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	vbox.anchor_top = 0.1
 	vbox.anchor_bottom = 0.9
+	vbox.offset_top = 0.0
+	vbox.offset_bottom = 0.0
 	vbox.add_theme_constant_override("separation", 28)
 	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
 	_panel.add_child(vbox)

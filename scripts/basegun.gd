@@ -16,9 +16,22 @@ class_name BaseGun
 @export var is_melee        : bool         = false
 @export var pool_size       : int          = 20
 
+@export_group("Model")
+## Hide the imported "ak48" child (which imports ~14x scaled and rotated so
+## the barrel points backwards / above the hand) and use the code-built
+## rifle (scripts/ProcRifle.gd) instead. Set false for the old model.
+@export var use_procedural_model : bool = true
+const PROC_RIFLE := preload("res://scripts/ProcRifle.gd")
+var _proc_model : Node3D = null
+
 @export_group("Viewmodel")
+# WeaponsManager._process() drives these every frame. vm_scale is applied
+# ONLY when it isn't (1,1,1). ProcRifle is built facing -Z so it needs no
+# rotation offset; the old imported model needed (0,180,0).
 @export var vm_position : Vector3 = Vector3(0.3, -0.25, -0.5)
-@export var vm_rotation : Vector3 = Vector3(0.0, 180.0, 0.0)
+@export var vm_rotation : Vector3 = Vector3(0.0, 0.0, 0.0)
+@export var vm_scale    : Vector3 = Vector3.ONE
+@export var vm_kick     : float   = 1.0
 
 @export_group("Shoot Sound")
 @export var shoot_sound             : AudioStream = null
@@ -54,6 +67,20 @@ func _ready() -> void:
 	add_child(audio_player)
 	audio_player.bus = &"Gunshots"
 	_fill_pool()
+	_swap_model()
+
+
+func _swap_model() -> void:
+	if not use_procedural_model:
+		return
+	var old := get_node_or_null("ak48")
+	if is_instance_valid(old):
+		old.visible = false
+		old.set_process(false)
+		old.set_physics_process(false)
+	_proc_model = PROC_RIFLE.new()
+	_proc_model.name = "ProcRifle"
+	add_child(_proc_model)
 
 
 func _exit_tree() -> void:

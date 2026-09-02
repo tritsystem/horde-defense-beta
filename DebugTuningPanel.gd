@@ -9,12 +9,14 @@ extends CanvasLayer
 ## Read by baseturret._base_ready() for each new turret placed.
 var turret_hp_override     : float = 13500.0
 ## Read by zombie._ready() for each new zombie that enters Zone 1.
-var zombie_damage_override : float = 15.0
+## NOTE: zombie._ready() ALWAYS applies this (the panel is an autoload), so this
+## default is the real early-game zombie damage, not the @export in zombie.gd.
+var zombie_damage_override : float = 9.0
 
 # ── knob definitions ─────────────────────────────────────────
 const _KNOBS : Array = [
 	{label="Turret Max HP",       min=500.0,  max=50000.0, step=100.0, default=13500.0, fmt="%.0f"},
-	{label="Zombie Damage",       min=1.0,    max=150.0,   step=1.0,   default=15.0,    fmt="%.0f"},
+	{label="Zombie Damage",       min=1.0,    max=150.0,   step=1.0,   default=9.0,     fmt="%.0f"},
 	{label="Director Difficulty", min=0.25,   max=4.0,     step=0.05,  default=1.0,     fmt="%.2f×"},
 ]
 

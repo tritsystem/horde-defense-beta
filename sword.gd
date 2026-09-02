@@ -17,6 +17,11 @@ extends Node3D
 
 @export_group("Skin")
 @export var custom_skin : PackedScene = null
+## Swap the old Sketchfab blade for the code-built glowing greatsword
+## (scripts/ProcGreatsword.gd). Set false to go back to the imported model.
+@export var use_procedural_blade : bool = true
+const PROC_GREATSWORD := preload("res://scripts/ProcGreatsword.gd")
+var _proc_blade : Node3D = null
 
 @export_group("Viewmodel")
 # REAL BUG FIX (2026-07-25): "reconfigure weapons to be positioned all
@@ -28,6 +33,8 @@ extends Node3D
 # sword visibly lower on screen than every gun. Match the shared default.
 @export var vm_position : Vector3 = Vector3(0.3, -0.25, -0.5)
 @export var vm_rotation : Vector3 = Vector3(0.0, 180.0, 0.0)
+@export var vm_scale    : Vector3 = Vector3.ONE
+@export var vm_kick     : float   = 0.0
 
 # ── enchantment ──────────────────────────────────────────────
 enum Enchant { NONE, FIRE, ICE, POISON, ELECTRIC, SHADOW, VAMPIRIC }
@@ -47,6 +54,16 @@ const ENCHANT_NAMES : Dictionary = {
 	Enchant.ELECTRIC: "Electric", Enchant.SHADOW:   "Shadow",
 	Enchant.VAMPIRIC: "Vampiric",
 }
+
+# ── SWORD MEMORY (2026-08-28): "the sword remembers the player" ────────────
+# A real Spikeling-driven per-player bond -- see sword_memory.gd for the
+# mechanics and the honest account of a design bug found + fixed while
+# verifying it. Persists to disk (user://sword_memory.json) so the bond
+# survives death/respawn/session restart -- loaded once here, saved after
+# every landed hit (cheap: small JSON, only on a real event, not every frame).
+const SwordMemoryScript = preload("res://sword_memory.gd")
+var memory: SwordMemory = SwordMemoryScript.new()
+var _memory_loaded : bool = false
 
 # ── refs ─────────────────────────────────────────────────────
 var camera : Camera3D        = null
@@ -69,6 +86,31 @@ func _ready() -> void:
 	_sfx = AudioStreamPlayer3D.new()
 	add_child(_sfx)
 	_sfx.max_distance = 20.0
+	if not _memory_loaded:
+		memory.load_from_disk()
+		_memory_loaded = true
+	_swap_blade()
+
+
+# Hide the imported Sketchfab mesh and drop in the code-built blade
+# (or a custom_skin scene if one is assigned). Reversible via the export.
+func _swap_blade() -> void:
+	if not use_procedural_blade and custom_skin == null:
+		return
+	for n in ["Sketchfab_model", "Sketchfab model", "model"]:
+		var old := get_node_or_null(n)
+		if is_instance_valid(old):
+			old.visible = false
+			old.set_process(false)
+	if custom_skin != null:
+		_proc_blade = custom_skin.instantiate() as Node3D
+	else:
+		_proc_blade = PROC_GREATSWORD.new()
+	if is_instance_valid(_proc_blade):
+		_proc_blade.name = "ProcBlade"
+		add_child(_proc_blade)
+		if enchantment != Enchant.NONE and _proc_blade.has_method("set_glow_color"):
+			_proc_blade.set_glow_color(ENCHANT_COLORS.get(enchantment, swing_color))
 
 
 # ============================================================
@@ -150,6 +192,11 @@ func _apply_hits() -> void:
 				dmg *= player.get_damage_multiplier()
 			if player.has_method("get_enchant_mult"):
 				dmg *= player.get_enchant_mult(enchantment)
+			# SWORD MEMORY: the sword hits measurably harder for a player it
+			# has bonded with -- a real, capped multiplier read off the SNN's
+			# accumulated recognition, not a cosmetic label.
+			var wielder_id : int = int(player.get("player_id")) if "player_id" in player else 1
+			dmg *= memory.attunement_damage_mult(wielder_id)
 			node.take_damage(dmg, player)
 
 			# Knockback
@@ -186,6 +233,15 @@ func _apply_hits() -> void:
 
 			_play_sfx(hit_sounds)
 			hit_any = true
+
+			# SWORD MEMORY: this landed hit is the real event that grows the
+			# bond -- a whiff (handled above by `if dist > attack_range`)
+			# never reaches here, so only genuine swordsmanship counts.
+			var was_recognized : bool = memory.recognizes(wielder_id)
+			memory.on_hit(wielder_id)
+			if not was_recognized and memory.recognizes(wielder_id):
+				_sword_message("⚔ The sword recognizes your hand now.")
+			memory.save_to_disk()
 
 	if hit_any:
 		for h in get_tree().get_nodes_in_group("hud"):
@@ -297,6 +353,8 @@ func set_enchantment(e: int) -> void:
 		_blade_glow_tweens.clear()
 		for mesh in find_children("*", "MeshInstance3D", true, false):
 			(mesh as MeshInstance3D).material_override = null
+		if is_instance_valid(_proc_blade) and _proc_blade.has_method("set_glow_color"):
+			_proc_blade.set_glow_color(swing_color)
 	else:
 		_update_blade_color()
 	_sword_message("✦ %s  •  [G] enchant zombies" % get_enchantment_name())
@@ -339,6 +397,8 @@ func _update_blade_color() -> void:
 		tw.tween_property(mi, "material_override:emission_energy_multiplier", 6.0, 0.6)
 		tw.tween_property(mi, "material_override:emission_energy_multiplier", 2.5, 0.6)
 		_blade_glow_tweens.append(tw)
+	if is_instance_valid(_proc_blade) and _proc_blade.has_method("set_glow_color"):
+		_proc_blade.set_glow_color(col)
 
 
 # ============================================================

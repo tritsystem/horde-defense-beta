@@ -43,9 +43,11 @@ const TIER_PATROL_RADII  : Dictionary = {1:14.0,   2:16.0,   3:18.0,   4:20.0,  
 # Egg limits — low cap keeps active unit count manageable
 const TIER_MAX_EGGS      : Dictionary = {1:1,      2:1,      3:2,      4:2,      5:3}
 const TIER_EGG_SPAWN_INT : Dictionary = {1:70.0,   2:60.0,   3:50.0,   4:40.0,   5:30.0}
-const TIER_EGG_HATCH_TIME: Dictionary = {1:90.0,   2:75.0,   3:60.0,   4:45.0,   5:30.0}
-# Wave sizes are capped by the 100-unit global limit in Egg.gd
-const TIER_EGG_WAVE_SIZE : Dictionary = {1:5,      2:7,      3:10,     4:14,     5:18}
+# Tier-1 hatch pushed 90 -> 110 for more early-game setup runway.
+const TIER_EGG_HATCH_TIME: Dictionary = {1:110.0,  2:75.0,   3:60.0,   4:45.0,   5:30.0}
+# Wave sizes are capped by the 100-unit global limit in Egg.gd.
+# Early tiers cut (1: 5->3, 2: 7->5) -- opening was too punishing; tiers 3-5 unchanged.
+const TIER_EGG_WAVE_SIZE : Dictionary = {1:3,      2:5,      3:10,     4:14,     5:18}
 # REAL FEATURE ADD (2026-07-21): "the higher the tier eggs the higher level
 # turrets it should have defending it as well as zombies" -- tier 1 nests
 # get no turrets at all (an easy first fight), scaling up to 3 max-tier
